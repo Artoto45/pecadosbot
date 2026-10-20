@@ -634,3 +634,60 @@ test('encuentra el reset PN aunque el LID sea primario y un alias oculte su clav
   assert.doesNotMatch(serialized, /reset_pending|573001234567|123@lid/);
   assert.equal(Object.keys(JSON.parse(serialized).contacts).length, 1);
 });
+
+test('inactividad mayor al TTL (24h) reinicia la fase a step1 conservando el idioma confirmado', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'interaction-state-'));
+  let clock = 1_700_000_000_000;
+  const store = createStore(directory, {
+    conversationTtlMs: 24 * 60 * 60 * 1000,
+    now: () => clock,
+  });
+
+  const first = store.register({
+    contactId: 'a',
+    eventId: 'msg:1',
+    kind: 'content',
+    detectedLanguage: 'fr',
+    languageEvidence: detectLanguageEvidence('bonjour'),
+  });
+  clock += 60 * 60 * 1000; // +1h
+  const second = store.register({
+    contactId: 'a',
+    eventId: 'msg:2',
+    kind: 'content',
+  });
+  clock += 24 * 60 * 60 * 1000 + 1; // +24h 1ms
+  const third = store.register({
+    contactId: 'a',
+    eventId: 'msg:3',
+    kind: 'content',
+  });
+
+  assert.equal(first.responseKey, 'step1');
+  assert.equal(first.language, 'fr');
+  assert.equal(second.responseKey, 'step2');
+  assert.equal(second.language, 'fr');
+  assert.equal(third.responseKey, 'step1');
+  assert.equal(third.language, 'fr');
+  assert.equal(third.phase, 1);
+});
+
+test('maxContacts poda los contactos más antiguos sin perder el contacto activo', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'interaction-state-'));
+  let clock = 1_700_000_000_000;
+  const store = createStore(directory, {
+    maxContacts: 2,
+    now: () => clock,
+  });
+
+  for (const id of ['c1', 'c2', 'c3']) {
+    clock += 1000;
+    store.register({ contactId: id, eventId: `ev:${id}`, kind: 'content' });
+  }
+
+  assert.equal(Object.keys(store.contacts).length, 2);
+  assert.equal(
+    store.register({ contactId: 'c1', eventId: 'ev:c1-new', kind: 'content' }).responseKey,
+    'step1',
+  );
+});

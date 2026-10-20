@@ -4,7 +4,7 @@ import {
   normalizeMessageContent,
 } from '@whiskeysockets/baileys';
 import { settleWithTimeout } from './keyed_serial_queue.mjs';
-import { toWhatsAppAudioContent } from './wa_audio_delivery.mjs';
+import { toWhatsAppAudioContent, toWhatsAppVideoContent } from './wa_audio_delivery.mjs';
 import { provisionalLanguageFromWhatsAppIdentity } from './whatsapp_language_hint.mjs';
 
 const DEFAULT_CONTACT_RESOLUTION_TIMEOUT_MS = 5_000;
@@ -130,6 +130,7 @@ export function createWhatsAppMessageHandler({
   routeInteraction,
   getResponseMessage,
   readAudio,
+  readVideo = async () => null,
   detectLanguage,
   markRead = async () => {},
   deliveryAllowed = () => true,
@@ -146,6 +147,7 @@ export function createWhatsAppMessageHandler({
   if (typeof routeInteraction !== 'function') throw new TypeError('routeInteraction is required');
   if (typeof getResponseMessage !== 'function') throw new TypeError('getResponseMessage is required');
   if (typeof readAudio !== 'function') throw new TypeError('readAudio is required');
+  if (typeof readVideo !== 'function') throw new TypeError('readVideo must be a function');
   if (typeof detectLanguage !== 'function') throw new TypeError('detectLanguage is required');
   if (typeof markRead !== 'function') throw new TypeError('markRead must be a function');
   if (typeof deliveryAllowed !== 'function') {
@@ -175,6 +177,7 @@ export function createWhatsAppMessageHandler({
       response: decision.responseKey,
       text: 'skipped',
       audio: 'skipped',
+      video: 'skipped',
     };
 
     try {
@@ -215,6 +218,25 @@ export function createWhatsAppMessageHandler({
       } catch {
         result.audio = 'failed';
         logger.error?.('[WA] Audio delivery failed');
+      }
+    }
+
+    if (response.video) {
+      try {
+        const videoContent = toWhatsAppVideoContent(await readVideo(response.video));
+        if (videoContent) {
+          await settleWithTimeout(
+            Promise.resolve(sendMessage(jid, videoContent)),
+            sendTimeoutMs,
+            'El envío de video de WhatsApp',
+          );
+          result.video = 'sent';
+        } else {
+          result.video = 'missing';
+        }
+      } catch {
+        result.video = 'failed';
+        logger.error?.('[WA] Video delivery failed');
       }
     }
 

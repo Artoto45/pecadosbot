@@ -100,7 +100,7 @@ WorkingDirectory=$REMOTE_DIR
 EnvironmentFile=$REMOTE_DIR/.env.local
 # Un solo worker conserva de forma coherente los retos Telethon y los cambios
 # transaccionales; los workers de canal corren en procesos separados.
-ExecStart=$(which gunicorn) -w 1 -b 0.0.0.0:5000 app:app
+ExecStart=$(which gunicorn) -w 1 --threads 4 -b 0.0.0.0:5000 app:app
 Restart=always
 RestartSec=5
 

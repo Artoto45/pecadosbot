@@ -1,6 +1,6 @@
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import { settleWithTimeout } from './keyed_serial_queue.mjs';
-import { toWhatsAppAudioContent } from './wa_audio_delivery.mjs';
+import { toWhatsAppAudioContent, toWhatsAppVideoContent } from './wa_audio_delivery.mjs';
 import { provisionalLanguageFromWhatsAppIdentity } from './whatsapp_language_hint.mjs';
 
 const DEFAULT_DEDUPE_TTL_MS = 60 * 60 * 1000;
@@ -71,6 +71,7 @@ export function createWhatsAppCallHandler({
   serializeClaim = async operation => operation(),
   serializeInteraction = async (_contactId, operation) => operation(),
   readAudio,
+  readVideo = async () => null,
   getLanguage = () => 'en',
   logger = console,
   now = () => Date.now(),
@@ -105,6 +106,7 @@ export function createWhatsAppCallHandler({
     throw new TypeError('serializeInteraction debe ser una función');
   }
   if (typeof readAudio !== 'function') throw new TypeError('readAudio es requerido');
+  if (typeof readVideo !== 'function') throw new TypeError('readVideo debe ser una función');
   if (!Number.isFinite(contactResolutionTimeoutMs) || contactResolutionTimeoutMs <= 0) {
     throw new TypeError('contactResolutionTimeoutMs debe ser positivo');
   }
@@ -301,6 +303,7 @@ export function createWhatsAppCallHandler({
         reject: 'pending',
         text: 'skipped',
         audio: 'skipped',
+        video: 'skipped',
         targetSource: replyTarget.source,
         targetKind: replyTarget.kind,
         // Every distinct call attempt receives the dedicated call response.
@@ -344,6 +347,25 @@ export function createWhatsAppCallHandler({
         } catch {
           result.audio = 'failed';
           logger.error?.('[WA CALL] Audio delivery failed');
+        }
+      }
+
+      if (callMessage.video) {
+        try {
+          const videoContent = toWhatsAppVideoContent(await readVideo(callMessage.video));
+          if (videoContent) {
+            await settleWithTimeout(
+              Promise.resolve(sendMessage(replyJid, videoContent)),
+              sendTimeoutMs,
+              'El envío de video de la llamada',
+            );
+            result.video = 'sent';
+          } else {
+            result.video = 'missing';
+          }
+        } catch {
+          result.video = 'failed';
+          logger.error?.('[WA CALL] Video delivery failed');
         }
       }
 

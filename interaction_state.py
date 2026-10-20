@@ -25,6 +25,19 @@ from language_adaptation import (
 
 
 VALID_KINDS = frozenset({"call", "content"})
+DEFAULT_CONVERSATION_TTL_SECONDS = 24 * 60 * 60
+DEFAULT_MAX_CONTACTS = 10_000
+
+
+def _resolve_default_ttl_seconds() -> float:
+    raw = os.environ.get("AUTOREPLY_CONVERSATION_TTL_SECONDS")
+    if raw is None or not raw.strip():
+        return float(DEFAULT_CONVERSATION_TTL_SECONDS)
+    try:
+        parsed = float(raw)
+    except ValueError:
+        return float(DEFAULT_CONVERSATION_TTL_SECONDS)
+    return max(0.0, parsed)
 
 
 @dataclass(frozen=True)
@@ -50,6 +63,8 @@ class PersistentInteractionState:
         *,
         default_language: str = "es",
         max_recent_events: int = 256,
+        max_contacts: int = DEFAULT_MAX_CONTACTS,
+        conversation_ttl_seconds: float | None = None,
         now: Callable[[], float] = time.time,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -57,14 +72,53 @@ class PersistentInteractionState:
             raise ValueError("default_language must be es, en, or fr")
         if max_recent_events < 1:
             raise ValueError("max_recent_events must be positive")
+        if max_contacts < 1:
+            raise ValueError("max_contacts must be positive")
 
         self.file_path = Path(file_path)
         self.default_language = default_language
         self.max_recent_events = max_recent_events
+        self.max_contacts = max_contacts
+        self._explicit_ttl = conversation_ttl_seconds is not None
+        self.conversation_ttl_seconds = (
+            float(conversation_ttl_seconds)
+            if conversation_ttl_seconds is not None
+            else _resolve_default_ttl_seconds()
+        )
         self.now = now
         self.logger = logger or logging.getLogger(__name__)
         self._contacts: dict[str, dict] = {}
         self._load()
+
+    def _is_conversation_expired(self, state: dict | None, current_time: float) -> bool:
+        if not state or state.get("phase", 0) == 0:
+            return False
+        if self.conversation_ttl_seconds <= 0:
+            return False
+        updated_at = state.get("updated_at", 0)
+        if not isinstance(updated_at, (int, float)) or isinstance(updated_at, bool) or updated_at <= 0:
+            return False
+        if not self._explicit_ttl and updated_at < 1_000_000_000 and current_time >= 1_000_000_000:
+            return False
+        return (current_time - float(updated_at)) >= self.conversation_ttl_seconds
+
+    def _prune_contacts(self, keep_key: str | None = None) -> None:
+        if len(self._contacts) <= self.max_contacts:
+            return
+        excess = len(self._contacts) - self.max_contacts
+        candidates = [
+            (
+                float(data.get("updated_at", 0))
+                if isinstance(data.get("updated_at"), (int, float))
+                else 0.0,
+                key,
+            )
+            for key, data in self._contacts.items()
+            if key != keep_key and not data.get("reset_pending")
+        ]
+        candidates.sort(key=lambda item: item[0])
+        for _, key in candidates[:excess]:
+            self._contacts.pop(key, None)
 
     @staticmethod
     def _fingerprint(namespace: str, value: object) -> str:
@@ -96,14 +150,19 @@ class PersistentInteractionState:
                 if not isinstance(events, list):
                     events = []
                 events = [item for item in events if isinstance(item, str)]
+                reset_pending = raw.get("reset_pending") is True and phase == 0
                 language_state = sanitize_language_state(raw)
-                clean[contact_key] = {
+                entry = {
                     "phase": phase,
                     **language_state,
-                    "recent_events": events[-self.max_recent_events :],
+                    "recent_events": [] if reset_pending else events[-self.max_recent_events :],
                     "updated_at": raw.get("updated_at", 0),
                 }
+                if reset_pending:
+                    entry["reset_pending"] = True
+                clean[contact_key] = entry
             self._contacts = clean
+            self._prune_contacts()
         except (OSError, ValueError, json.JSONDecodeError):
             self.logger.error("Interaction state could not be loaded; starting empty")
             self._contacts = {}
@@ -174,6 +233,10 @@ class PersistentInteractionState:
         state.update(reduced_language)
         effective_language = state.get("language") or self.default_language
 
+        current_time = self.now()
+        if self._is_conversation_expired(state, current_time):
+            state["phase"] = 0
+
         previous_phase = state["phase"]
         if kind == "call":
             response_key = "call"
@@ -190,7 +253,9 @@ class PersistentInteractionState:
         if len(recent_events) > self.max_recent_events:
             del recent_events[: -self.max_recent_events]
         state["phase"] = next_phase
-        state["updated_at"] = self.now()
+        state["updated_at"] = current_time
+        state.pop("reset_pending", None)
+        self._prune_contacts(keep_key=contact_key)
         persisted = self._save()
 
         return InteractionDecision(
@@ -239,6 +304,9 @@ class PersistentInteractionState:
                 response_key=None,
                 language=language or self.default_language,
             )
+
+        if self._is_conversation_expired(state, self.now()):
+            phase = 0
 
         reduced_language = reduce_language_state(
             state,

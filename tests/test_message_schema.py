@@ -82,6 +82,26 @@ class MessageSchemaTests(unittest.TestCase):
         self.assertEqual("custom.mp3", normalized["es"]["steps"][1]["audio"])
         self.assertEqual("llamada", normalized["es"]["call"]["text"])
         self.assertEqual("custom-call.mp3", normalized["es"]["call"]["audio"])
+        self.assertEqual("", normalized["es"]["steps"][0]["video"])
+        self.assertEqual("", normalized["es"]["call"]["video"])
+
+    def test_preserves_personalized_video_fields_and_adds_empty_default(self):
+        live = {
+            "es": {
+                "steps": [
+                    {"step": 1, "text": "uno", "audio": "1.mp3", "video": "es_msg1.mp4", "loop": False},
+                    {"step": 2, "text": "dos", "audio": "2.mp3", "loop": True},
+                ],
+                "call": {"text": "llamada", "audio": "call.mp3", "video": "es_call.mp4"},
+            }
+        }
+
+        normalized, changed = normalize_message_schema(live, DEFAULTS)
+
+        self.assertTrue(changed)
+        self.assertEqual("es_msg1.mp4", normalized["es"]["steps"][0]["video"])
+        self.assertEqual("", normalized["es"]["steps"][1]["video"])
+        self.assertEqual("es_call.mp4", normalized["es"]["call"]["video"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -533,3 +533,31 @@ test('operational pause rejects the call without consuming interaction state', a
   assert.equal(routes, 1);
   assert.deepEqual(effects, ['reject', 'reject', 'send']);
 });
+
+test('entrega audio, video y texto en respuesta a llamada cuando hay video configurado', async () => {
+  const effects = [];
+  const handler = createWhatsAppCallHandler({
+    rejectCall: async (id, from) => effects.push(['reject', id, from]),
+    sendMessage: async (jid, content) => effects.push(['send', jid, content]),
+    getCallMessage: () => ({ text: 'Te llamamos pronto', audio: 'call.mp3', video: 'call.mp4' }),
+    readAudio: async () => Buffer.from('call-audio'),
+    readVideo: async () => ({ buffer: Buffer.from('call-video'), mimetype: 'video/mp4' }),
+    getLanguage: () => 'es',
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const result = await handler([offer({ id: 'call-video-1' })]);
+
+  assert.equal(result[0].status, 'handled');
+  assert.equal(result[0].audio, 'sent');
+  assert.equal(result[0].video, 'sent');
+  assert.equal(result[0].text, 'sent');
+  const sentContents = effects.filter(([kind]) => kind === 'send').map(([, , content]) => content);
+  assert.equal(sentContents.length, 3);
+  assert.ok(sentContents[0].audio);
+  assert.deepEqual(sentContents[1], {
+    video: Buffer.from('call-video'),
+    mimetype: 'video/mp4',
+  });
+  assert.deepEqual(sentContents[2], { text: 'Te llamamos pronto' });
+});

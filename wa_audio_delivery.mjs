@@ -58,6 +58,56 @@ export function toWhatsAppAudioContent(value) {
 }
 
 /**
+ * Normaliza el resultado de readVideo para Baileys.
+ */
+export function toWhatsAppVideoContent(value) {
+  if (Buffer.isBuffer(value)) {
+    return { video: value, mimetype: 'video/mp4' };
+  }
+  if (!value || typeof value !== 'object' || !Buffer.isBuffer(value.buffer)) return null;
+
+  return {
+    video: value.buffer,
+    mimetype: typeof value.mimetype === 'string' && value.mimetype
+      ? value.mimetype
+      : 'video/mp4',
+  };
+}
+
+/**
+ * Crea un lector seguro de archivos de video dentro de videoDir.
+ */
+export function createWhatsAppVideoReader({
+  videoDir,
+  logger = console,
+} = {}) {
+  if (typeof videoDir !== 'string' || !videoDir) throw new TypeError('videoDir is required');
+  const resolvedVideoDir = path.resolve(videoDir);
+
+  return async function readVideo(filename) {
+    if (typeof filename !== 'string' || !filename) return null;
+    const sourcePath = path.resolve(resolvedVideoDir, filename);
+    if (!isWithinDirectory(resolvedVideoDir, sourcePath)) {
+      logger.warn?.('[WA VIDEO] Invalid video path ignored');
+      return null;
+    }
+
+    try {
+      const buffer = await readNonEmptyFile(sourcePath);
+      if (!buffer) return null;
+      const ext = path.extname(sourcePath).toLowerCase();
+      const mimetype = ext === '.webm'
+        ? 'video/webm'
+        : (ext === '.mov' ? 'video/quicktime' : 'video/mp4');
+      return { buffer, mimetype };
+    } catch (error) {
+      if (error?.code !== 'ENOENT') logger.warn?.('[WA VIDEO] Video read failed; skipping file');
+      return null;
+    }
+  };
+}
+
+/**
  * Crea un lector que convierte los MP3 a OGG/Opus una sola vez y reutiliza el
  * resultado por hash. Ante cualquier fallo devuelve el MP3 original.
  */

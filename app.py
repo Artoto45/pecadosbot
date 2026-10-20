@@ -15,6 +15,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import timedelta
 from pathlib import Path
 from flask import (
@@ -46,6 +48,7 @@ from wa_safety import public_wa_safety_health, set_wa_operator_paused
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 AUDIO_DIR = DATA_DIR / "audios"
+VIDEO_DIR = DATA_DIR / "videos"
 MESSAGES_FILE = DATA_DIR / "messages.json"
 DEFAULT_MESSAGES_FILE = BASE_DIR / "messages.json"
 WA_CALL_HEALTH_FILE = DATA_DIR / "wa_call_health.json"
@@ -629,7 +632,11 @@ function renderSteps(data) {
     <div class="card-body">`;
 
   langData.steps.slice(0, 2).forEach((step, i) => {
-    const audioPath = `/api/audio/${step.audio}`;
+    const audioExists = Boolean(step.audio && (!data.audios || !data.audios[lang] || data.audios[lang][step.audio] !== false));
+    const audioPath = audioExists ? `/api/audio/${step.audio}` : '';
+    const videoFile = step.video || '';
+    const videoExists = Boolean(videoFile && (!data.videos || !data.videos[lang] || data.videos[lang][videoFile] !== false));
+    const videoPath = videoExists ? `/api/video/${videoFile}` : '';
     html += `
     <div class="mb-4 p-3" style="background:#141428; border-radius:8px;" data-step="${i}">
       <div class="d-flex justify-content-between align-items-center mb-2">
@@ -641,19 +648,38 @@ function renderSteps(data) {
         </div>
       </div>
       <div class="row g-3">
-        <div class="col-md-8">
+        <div class="col-md-6">
           <label class="form-label small">Texto del mensaje</label>
           <textarea class="form-control" onchange="saveStepText('${lang}', ${i}, this.value)">${escapeHtml(step.text)}</textarea>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
           <label class="form-label small">Audio</label>
+          ${audioPath ? `
           <div class="audio-preview mb-2">
             <audio controls src="${audioPath}"></audio>
-            <span class="small text-muted">${step.audio}</span>
-          </div>
+            <div class="d-flex justify-content-between align-items-center mt-1">
+              <span class="small text-muted">${escapeHtml(step.audio)}</span>
+              <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="removeStepAudio('${lang}', ${i})">✕</button>
+            </div>
+          </div>` : '<div class="mb-2 small text-muted">🎵 Sin audio</div>'}
           <div class="input-group input-group-sm">
-            <input type="file" class="form-control form-control-sm" accept="audio/mpeg,audio/mp3" 
+            <input type="file" class="form-control form-control-sm" accept="audio/mpeg,audio/mp3,audio/ogg,audio/wav" 
                    onchange="uploadAudio('${lang}', ${i}, this.files[0])">
+          </div>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">Video (opcional)</label>
+          ${videoPath ? `
+          <div class="video-preview mb-2">
+            <video controls preload="metadata" style="width:100%; max-height:140px; border-radius:6px; background:#000;" src="${videoPath}"></video>
+            <div class="d-flex justify-content-between align-items-center mt-1">
+              <span class="small text-muted">${escapeHtml(videoFile)}</span>
+              <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="removeStepVideo('${lang}', ${i})">✕</button>
+            </div>
+          </div>` : '<div class="mb-2 small text-muted">🎬 Sin video</div>'}
+          <div class="input-group input-group-sm">
+            <input type="file" class="form-control form-control-sm" accept="video/mp4,video/webm,video/quicktime" 
+                   onchange="uploadVideo('${lang}', ${i}, this.files[0])">
           </div>
         </div>
       </div>
@@ -663,8 +689,10 @@ function renderSteps(data) {
   html += `</div></div>`;
 
   // ── Sección de Llamada ──
-  const callData = langData.call || { text: '📞 Llamada recibida', audio: '' };
+  const callData = langData.call || { text: '📞 Llamada recibida', audio: '', video: '' };
   const callAudioPath = callData.audio ? `/api/audio/${callData.audio}` : '';
+  const callVideoFile = callData.video || '';
+  const callVideoPath = callVideoFile ? `/api/video/${callVideoFile}` : '';
   html += `
   <div class="card mt-3">
     <div class="card-header">
@@ -672,20 +700,38 @@ function renderSteps(data) {
     </div>
     <div class="card-body">
       <div class="row g-3">
-        <div class="col-md-8">
+        <div class="col-md-6">
           <label class="form-label small">Texto de llamada</label>
           <textarea class="form-control" onchange="saveCallText('${lang}', this.value)">${escapeHtml(callData.text)}</textarea>
         </div>
-        <div class="col-md-4">
+        <div class="col-md-3">
           <label class="form-label small">Audio de llamada</label>
           ${callAudioPath ? `
           <div class="audio-preview mb-2">
             <audio controls src="${callAudioPath}"></audio>
-            <span class="small text-muted">${callData.audio}</span>
+            <div class="d-flex justify-content-between align-items-center mt-1">
+              <span class="small text-muted">${escapeHtml(callData.audio)}</span>
+              <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="removeCallAudio('${lang}')">✕</button>
+            </div>
           </div>` : '<div class="mb-2 small text-muted">🎵 Sin audio aún</div>'}
           <div class="input-group input-group-sm">
-            <input type="file" class="form-control form-control-sm" accept="audio/mpeg,audio/mp3"
+            <input type="file" class="form-control form-control-sm" accept="audio/mpeg,audio/mp3,audio/ogg,audio/wav"
                    onchange="uploadCallAudio('${lang}', this.files[0])">
+          </div>
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small">Video de llamada (opcional)</label>
+          ${callVideoPath ? `
+          <div class="video-preview mb-2">
+            <video controls preload="metadata" style="width:100%; max-height:140px; border-radius:6px; background:#000;" src="${callVideoPath}"></video>
+            <div class="d-flex justify-content-between align-items-center mt-1">
+              <span class="small text-muted">${escapeHtml(callVideoFile)}</span>
+              <button class="btn btn-sm btn-outline-danger py-0 px-1" onclick="removeCallVideo('${lang}')">✕</button>
+            </div>
+          </div>` : '<div class="mb-2 small text-muted">🎬 Sin video aún</div>'}
+          <div class="input-group input-group-sm">
+            <input type="file" class="form-control form-control-sm" accept="video/mp4,video/webm,video/quicktime"
+                   onchange="uploadCallVideo('${lang}', this.files[0])">
           </div>
         </div>
       </div>
@@ -746,6 +792,86 @@ async function uploadCallAudio(lang, file) {
   await uploadFileChunked(file, lang, {type: "call"});
 }
 
+async function uploadVideo(lang, step, file) {
+  if (!file) return;
+  if (!requirePanelAdmin()) return;
+  await uploadFileChunked(file, lang, {step, type: "step_video"});
+}
+
+async function uploadCallVideo(lang, file) {
+  if (!file) return;
+  if (!requirePanelAdmin()) return;
+  await uploadFileChunked(file, lang, {type: "call_video"});
+}
+
+async function removeStepAudio(lang, step) {
+  if (!requirePanelAdmin()) return;
+  if (!confirm("¿Quitar el audio del Paso " + (step + 1) + "?")) return;
+  try {
+    const r = await fetch("/api/messages", {
+      method: "POST",
+      headers: channelHeaders(),
+      body: JSON.stringify({lang, step, action: "delete_step_audio"})
+    });
+    const resp = await r.json();
+    if (resp.ok) { toast("🗑 Audio eliminado del Paso " + (step + 1)); loadData(); }
+    else toast("❌ Error: " + resp.error, "error");
+  } catch(e) {
+    toast("❌ Error: " + e.message, "error");
+  }
+}
+
+async function removeStepVideo(lang, step) {
+  if (!requirePanelAdmin()) return;
+  if (!confirm("¿Quitar el video del Paso " + (step + 1) + "?")) return;
+  try {
+    const r = await fetch("/api/messages", {
+      method: "POST",
+      headers: channelHeaders(),
+      body: JSON.stringify({lang, step, action: "delete_step_video"})
+    });
+    const resp = await r.json();
+    if (resp.ok) { toast("🗑 Video eliminado del Paso " + (step + 1)); loadData(); }
+    else toast("❌ Error: " + resp.error, "error");
+  } catch(e) {
+    toast("❌ Error: " + e.message, "error");
+  }
+}
+
+async function removeCallAudio(lang) {
+  if (!requirePanelAdmin()) return;
+  if (!confirm("¿Quitar el audio de llamada?")) return;
+  try {
+    const r = await fetch("/api/messages", {
+      method: "POST",
+      headers: channelHeaders(),
+      body: JSON.stringify({lang, action: "delete_call_audio"})
+    });
+    const resp = await r.json();
+    if (resp.ok) { toast("🗑 Audio de llamada eliminado"); loadData(); }
+    else toast("❌ Error: " + resp.error, "error");
+  } catch(e) {
+    toast("❌ Error: " + e.message, "error");
+  }
+}
+
+async function removeCallVideo(lang) {
+  if (!requirePanelAdmin()) return;
+  if (!confirm("¿Quitar el video de llamada?")) return;
+  try {
+    const r = await fetch("/api/messages", {
+      method: "POST",
+      headers: channelHeaders(),
+      body: JSON.stringify({lang, action: "delete_call_video"})
+    });
+    const resp = await r.json();
+    if (resp.ok) { toast("🗑 Video de llamada eliminado"); loadData(); }
+    else toast("❌ Error: " + resp.error, "error");
+  } catch(e) {
+    toast("❌ Error: " + e.message, "error");
+  }
+}
+
 async function uploadFileChunked(file, lang, opts = {}) {
   const CHUNK_SIZE = 500 * 1024; // 500KB per chunk
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
@@ -793,7 +919,8 @@ async function uploadFileChunked(file, lang, opts = {}) {
     });
     const resp = await r.json();
     if (resp.ok) {
-      toast("🎵 Audio subido: " + resp.filename);
+      const isVideo = String(opts.type || "").includes("video");
+      toast((isVideo ? "🎬 Video subido: " : "🎵 Audio subido: ") + resp.filename);
       loadData();
     } else {
       toast("❌ Error: " + resp.error, "error");
@@ -2127,8 +2254,15 @@ body { background: #17212b; color: #e0e0e0; font-family: system-ui; margin: 0; p
 <body>
 <div class="small">🤖 Bot AutoReply — {{ lang_name }}</div>
 {% for step in steps %}
+{% if step.text %}
 <div class="msg"><strong>Bot:</strong> {{ step.text }}</div>
+{% endif %}
+{% if step.audio %}
 <div class="audio-msg">🎵 {{ step.audio }}</div>
+{% endif %}
+{% if step.video %}
+<div class="audio-msg">🎬 {{ step.video }}</div>
+{% endif %}
 {% endfor %}
 <div class="small" style="margin-top:16px;">* Así se ven los mensajes en Telegram</div>
 </body>
@@ -2140,8 +2274,11 @@ def load_messages_json():
     return load_message_file(MESSAGES_FILE, DEFAULT_MESSAGES_FILE, persist=True)
 
 def save_messages_json(data):
-    with open(MESSAGES_FILE, "w", encoding="utf-8") as f:
+    MESSAGES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = MESSAGES_FILE.with_suffix(".tmp")
+    with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    os.replace(temp_file, MESSAGES_FILE)
 
 
 def load_telegram_audio_branding() -> dict[str, str]:
@@ -2503,14 +2640,38 @@ def _windows_process_command_line(pid: int) -> str:
         return ""
 
 
+def _posix_process_command_line(pid: int) -> str:
+    """Obtiene la línea de comando en Linux (/proc) o macOS/BSD (ps)."""
+
+    if sys.platform == "win32" or pid <= 1:
+        return ""
+    try:
+        return (
+            Path(f"/proc/{int(pid)}/cmdline")
+            .read_bytes()
+            .replace(b"\0", b" ")
+            .decode("utf-8", "ignore")
+        )
+    except OSError:
+        pass
+    try:
+        result = subprocess.run(
+            ["ps", "-p", str(int(pid)), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return ""
+
+
 def _is_telegram_worker_pid(pid: int) -> bool:
     """Evita terminar BotFather u otro proceso si el PID quedó obsoleto."""
     if sys.platform != "win32":
-        try:
-            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "ignore")
-            return "bot.py" in cmdline and "botfather_bot.py" not in cmdline and "restart_bot.py" not in cmdline
-        except OSError:
-            return False
+        cmdline = _posix_process_command_line(pid)
+        return "bot.py" in cmdline and "botfather_bot.py" not in cmdline and "restart_bot.py" not in cmdline
     cmdline = _windows_process_command_line(pid).lower()
     return "bot.py" in cmdline and "botfather_bot.py" not in cmdline and "restart_bot.py" not in cmdline
 
@@ -2766,12 +2927,25 @@ def api_data():
     running = bot_is_running()
     wa_running = wa_is_running()
     audios = {}
+    videos = {}
     for lang, lang_data in messages.items():
         audios[lang] = {}
+        videos[lang] = {}
         for step in lang_data.get("steps", []):
             audio_file = step.get("audio", "")
-            audio_path = AUDIO_DIR / audio_file
-            audios[lang][audio_file] = audio_path.exists()
+            if audio_file:
+                audios[lang][audio_file] = (AUDIO_DIR / audio_file).is_file()
+            video_file = step.get("video", "")
+            if video_file:
+                videos[lang][video_file] = (VIDEO_DIR / video_file).is_file()
+        call_data = lang_data.get("call", {})
+        if isinstance(call_data, dict):
+            call_audio = call_data.get("audio", "")
+            if call_audio:
+                audios[lang][call_audio] = (AUDIO_DIR / call_audio).is_file()
+            call_video = call_data.get("video", "")
+            if call_video:
+                videos[lang][call_video] = (VIDEO_DIR / call_video).is_file()
     
     # Verificar si hay QR disponible
     qr_available = (BASE_DIR / "wa_qr.png").exists()
@@ -2784,6 +2958,7 @@ def api_data():
         "wa_running": wa_running,
         "wa_qr": qr_available,
         "audios": audios,
+        "videos": videos,
         "telegram_audio_branding": load_telegram_audio_branding(),
     })
 
@@ -3098,6 +3273,7 @@ def _read_tg_interaction_health() -> dict:
             "peer_resolution": "never",
             "text": "never",
             "audio": "never",
+            "video": "never",
         },
     }
     file_path = DATA_DIR / "tg_interaction_health.json"
@@ -3172,7 +3348,7 @@ def _read_tg_interaction_health() -> dict:
     delivery_states = {"never", "pending", "sent", "failed", "missing", "skipped"}
     result["delivery"] = {
         key: _safe_enum(delivery.get(key), delivery_states, "never")
-        for key in ("peer_resolution", "text", "audio")
+        for key in ("peer_resolution", "text", "audio", "video")
     }
     return result
 
@@ -3230,8 +3406,8 @@ def api_messages():
 
     elif action == "edit_call_text":
         text = data.get("text", "").strip()
-        if "call" not in lang_data:
-            lang_data["call"] = {"text": "", "audio": ""}
+        if "call" not in lang_data or not isinstance(lang_data["call"], dict):
+            lang_data["call"] = {"text": "", "audio": "", "video": ""}
         lang_data["call"]["text"] = text
         save_messages_json(messages)
         return jsonify({"ok": True})
@@ -3245,7 +3421,66 @@ def api_messages():
         save_messages_json(messages)
         return jsonify({"ok": True})
 
+    elif action == "delete_step_audio":
+        step = data.get("step")
+        if step is None or step < 0 or step >= len(steps):
+            return jsonify({"ok": False, "error": "Invalid step"}), 400
+        old_audio = (steps[step].get("audio") or "").strip()
+        if old_audio and "/" not in old_audio and "\\" not in old_audio:
+            (AUDIO_DIR / old_audio).unlink(missing_ok=True)
+        steps[step]["audio"] = ""
+        save_messages_json(messages)
+        return jsonify({"ok": True})
+
+    elif action == "delete_step_video":
+        step = data.get("step")
+        if step is None or step < 0 or step >= len(steps):
+            return jsonify({"ok": False, "error": "Invalid step"}), 400
+        old_video = (steps[step].get("video") or "").strip()
+        if old_video and "/" not in old_video and "\\" not in old_video:
+            (VIDEO_DIR / old_video).unlink(missing_ok=True)
+        steps[step]["video"] = ""
+        save_messages_json(messages)
+        return jsonify({"ok": True})
+
+    elif action == "delete_call_audio":
+        if "call" not in lang_data or not isinstance(lang_data["call"], dict):
+            lang_data["call"] = {"text": "", "audio": "", "video": ""}
+        old_audio = (lang_data["call"].get("audio") or "").strip()
+        if old_audio and "/" not in old_audio and "\\" not in old_audio:
+            (AUDIO_DIR / old_audio).unlink(missing_ok=True)
+        lang_data["call"]["audio"] = ""
+        save_messages_json(messages)
+        return jsonify({"ok": True})
+
+    elif action == "delete_call_video":
+        if "call" not in lang_data or not isinstance(lang_data["call"], dict):
+            lang_data["call"] = {"text": "", "audio": "", "video": ""}
+        old_video = (lang_data["call"].get("video") or "").strip()
+        if old_video and "/" not in old_video and "\\" not in old_video:
+            (VIDEO_DIR / old_video).unlink(missing_ok=True)
+        lang_data["call"]["video"] = ""
+        save_messages_json(messages)
+        return jsonify({"ok": True})
+
     return jsonify({"ok": False, "error": f"Unknown action: {action}"}), 400
+
+
+_ALLOWED_AUDIO_EXTENSIONS = (".mp3", ".ogg", ".wav")
+_ALLOWED_VIDEO_EXTENSIONS = (".mp4", ".webm", ".mov")
+_ALLOWED_UPLOAD_TYPES = frozenset({"step", "call", "step_video", "call_video"})
+_MAX_UPLOAD_CHUNKS = 400
+
+
+def _resolve_video_extension(filename: str) -> str | None:
+    lowered = (filename or "").strip().lower()
+    if not lowered:
+        return ".mp4"
+    for ext in _ALLOWED_VIDEO_EXTENSIONS:
+        if lowered.endswith(ext):
+            return ext
+    return None
+
 
 @app.route("/api/upload_call_audio", methods=["POST"])
 def api_upload_call_audio():
@@ -3258,20 +3493,21 @@ def api_upload_call_audio():
         return jsonify({"ok": False, "error": "lang required"}), 400
     
     file = request.files["audio"]
-    if not file.filename.endswith((".mp3", ".ogg", ".wav")):
+    if not (file.filename or "").lower().endswith(_ALLOWED_AUDIO_EXTENSIONS):
         return jsonify({"ok": False, "error": "Solo MP3, OGG o WAV"}), 400
     
     messages = load_messages_json()
     if lang not in messages:
         return jsonify({"ok": False, "error": f"Idioma '{lang}' no existe"}), 400
     
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
     audio_filename = f"{lang}_call.mp3"
     audio_path = AUDIO_DIR / audio_filename
     file.save(str(audio_path))
     
     # Actualizar messages.json con el audio de llamada
-    if "call" not in messages[lang]:
-        messages[lang]["call"] = {"text": "📞 Llamada recibida", "audio": audio_filename}
+    if "call" not in messages[lang] or not isinstance(messages[lang]["call"], dict):
+        messages[lang]["call"] = {"text": "📞 Llamada recibida", "audio": audio_filename, "video": ""}
     else:
         messages[lang]["call"]["audio"] = audio_filename
     save_messages_json(messages)
@@ -3297,30 +3533,124 @@ def api_upload_audio():
         return jsonify({"ok": False, "error": "Invalid step"}), 400
 
     file = request.files["audio"]
-    if not file.filename.endswith((".mp3", ".ogg", ".wav")):
+    if not (file.filename or "").lower().endswith(_ALLOWED_AUDIO_EXTENSIONS):
         return jsonify({"ok": False, "error": "Solo MP3, OGG o WAV"}), 400
 
-    # Usar el nombre esperado del step
-    audio_filename = steps[step]["audio"]
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    audio_filename = steps[step].get("audio") or f"{lang}_msg{step + 1}.mp3"
     audio_path = AUDIO_DIR / audio_filename
     file.save(str(audio_path))
+    if steps[step].get("audio") != audio_filename:
+        steps[step]["audio"] = audio_filename
+        save_messages_json(messages)
 
     return jsonify({"ok": True, "filename": audio_filename, "path": str(audio_path)})
+
+
+@app.route("/api/upload_call_video", methods=["POST"])
+def api_upload_call_video():
+    """Sube video para el mensaje de llamada."""
+    if "video" not in request.files:
+        return jsonify({"ok": False, "error": "No video file"}), 400
+
+    lang = request.form.get("lang")
+    if not lang:
+        return jsonify({"ok": False, "error": "lang required"}), 400
+
+    file = request.files["video"]
+    ext = _resolve_video_extension(file.filename or "")
+    if ext is None:
+        return jsonify({"ok": False, "error": "Solo MP4, WEBM o MOV"}), 400
+
+    messages = load_messages_json()
+    if lang not in messages:
+        return jsonify({"ok": False, "error": f"Idioma '{lang}' no existe"}), 400
+
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    video_filename = f"{lang}_call{ext}"
+    video_path = VIDEO_DIR / video_filename
+    file.save(str(video_path))
+
+    if "call" not in messages[lang] or not isinstance(messages[lang]["call"], dict):
+        messages[lang]["call"] = {"text": "📞 Llamada recibida", "audio": "", "video": video_filename}
+    else:
+        messages[lang]["call"]["video"] = video_filename
+    save_messages_json(messages)
+
+    return jsonify({"ok": True, "filename": video_filename, "path": str(video_path)})
+
+
+@app.route("/api/upload_video", methods=["POST"])
+def api_upload_video():
+    """Sube video para un paso de respuesta."""
+    if "video" not in request.files:
+        return jsonify({"ok": False, "error": "No video file"}), 400
+
+    lang = request.form.get("lang")
+    step = request.form.get("step", type=int)
+    if not lang or step is None:
+        return jsonify({"ok": False, "error": "lang and step required"}), 400
+
+    messages = load_messages_json()
+    if lang not in messages:
+        return jsonify({"ok": False, "error": f"Idioma '{lang}' no existe"}), 400
+
+    steps = messages[lang]["steps"]
+    if step < 0 or step >= len(steps):
+        return jsonify({"ok": False, "error": "Invalid step"}), 400
+
+    file = request.files["video"]
+    ext = _resolve_video_extension(file.filename or "")
+    if ext is None:
+        return jsonify({"ok": False, "error": "Solo MP4, WEBM o MOV"}), 400
+
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    video_filename = f"{lang}_msg{step + 1}{ext}"
+    video_path = VIDEO_DIR / video_filename
+    file.save(str(video_path))
+    steps[step]["video"] = video_filename
+    save_messages_json(messages)
+
+    return jsonify({"ok": True, "filename": video_filename, "path": str(video_path)})
+
 
 @app.route("/api/audio/<filename>")
 def api_audio(filename):
     """Sirve archivos de audio para preview."""
     return send_from_directory(str(AUDIO_DIR), filename)
 
+
+@app.route("/api/video/<filename>")
+def api_video(filename):
+    """Sirve archivos de video para preview."""
+    return send_from_directory(str(VIDEO_DIR), filename)
+
+
 # ── Chunked upload (bypass proxy size limits) ─────────────────────────
+
+def _upload_chunk_temp_key(lang: str, upload_type: str, step: int | None) -> str | None:
+    if lang not in {"es", "en", "fr"}:
+        return None
+    if upload_type not in _ALLOWED_UPLOAD_TYPES:
+        return None
+    if upload_type == "call":
+        return f"{lang}_call"
+    if upload_type == "call_video":
+        return f"{lang}_call_video"
+    if step not in {0, 1}:
+        return None
+    if upload_type == "step_video":
+        return f"{lang}_step{step}_video"
+    return f"{lang}_step{step}"
+
 
 @app.route("/api/upload_chunk", methods=["POST"])
 def api_upload_chunk():
-    """Recibe un chunk de audio. Cada chunk ≤ 500KB."""
+    """Recibe un chunk de audio o video. Cada chunk ≤ 500KB."""
     if "chunk" not in request.files:
         return jsonify({"ok": False, "error": "No chunk"}), 400
 
-    lang = request.form.get("lang", "unknown")
+    lang = request.form.get("lang", "")
     chunk_index = request.form.get("chunk_index", type=int)
     total_chunks = request.form.get("total_chunks", type=int)
     upload_type = request.form.get("type", "step")
@@ -3329,12 +3659,13 @@ def api_upload_chunk():
 
     if chunk_index is None or total_chunks is None:
         return jsonify({"ok": False, "error": "chunk_index and total_chunks required"}), 400
+    if not (1 <= total_chunks <= _MAX_UPLOAD_CHUNKS) or not (0 <= chunk_index < total_chunks):
+        return jsonify({"ok": False, "error": "Invalid chunk range"}), 400
 
-    # Temp dir: data/temp_chunks/<lang>_<type>_<step>/
-    if upload_type == "call":
-        temp_key = f"{lang}_call"
-    else:
-        temp_key = f"{lang}_step{step}"
+    temp_key = _upload_chunk_temp_key(lang, upload_type, step)
+    if temp_key is None:
+        return jsonify({"ok": False, "error": "Invalid upload target"}), 400
+
     temp_dir = DATA_DIR / "temp_chunks" / temp_key
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -3347,7 +3678,7 @@ def api_upload_chunk():
             "type": upload_type, "lang": lang}
     if step is not None:
         meta["step"] = step
-    with open(temp_dir / "meta.json", "w") as f:
+    with open(temp_dir / "meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f)
 
     return jsonify({"ok": True, "chunk": chunk_index, "total": total_chunks})
@@ -3355,7 +3686,7 @@ def api_upload_chunk():
 
 @app.route("/api/upload_assemble", methods=["POST"])
 def api_upload_assemble():
-    """Reensambla los chunks en el archivo final de audio."""
+    """Reensambla los chunks en el archivo final de audio o video."""
     try:
         return _do_upload_assemble()
     except Exception as e:
@@ -3371,21 +3702,25 @@ def _do_upload_assemble():
 
     lang = data.get("lang")
     step_raw = data.get("step")
-    step = int(step_raw) if step_raw is not None else None
+    try:
+        step = int(step_raw) if step_raw is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Invalid step"}), 400
     upload_type = data.get("type", "step")
     total_chunks = data.get("total_chunks")
     original_name = data.get("original_name", "")
 
     if not lang:
         return jsonify({"ok": False, "error": "lang required"}), 400
+    if not isinstance(total_chunks, int) or not (1 <= total_chunks <= _MAX_UPLOAD_CHUNKS):
+        return jsonify({"ok": False, "error": "Invalid total_chunks"}), 400
 
-    # Encontrar temp dir
-    if upload_type == "call":
-        temp_key = f"{lang}_call"
-    else:
-        if step is None:
-            return jsonify({"ok": False, "error": "step required"}), 400
-        temp_key = f"{lang}_step{step}"
+    if upload_type in {"step", "step_video"} and step is None:
+        return jsonify({"ok": False, "error": "step required"}), 400
+
+    temp_key = _upload_chunk_temp_key(lang, upload_type, step)
+    if temp_key is None:
+        return jsonify({"ok": False, "error": "Invalid upload target"}), 400
 
     temp_dir = DATA_DIR / "temp_chunks" / temp_key
     if not temp_dir.exists():
@@ -3396,44 +3731,76 @@ def _do_upload_assemble():
         if not (temp_dir / f"chunk_{i:04d}").exists():
             return jsonify({"ok": False, "error": f"Missing chunk {i}"}), 400
 
-    # Determinar filename de salida
-    if upload_type == "call":
-        audio_filename = f"{lang}_call.mp3"
-    else:
-        messages = load_messages_json()
-        if lang not in messages:
-            return jsonify({"ok": False, "error": f"Idioma '{lang}' no existe"}), 400
-        steps = messages[lang]["steps"]
-        if step < 0 or step >= len(steps):
-            return jsonify({"ok": False, "error": "Invalid step"}), 400
-        audio_filename = steps[step]["audio"]
+    messages = load_messages_json()
+    if lang not in messages:
+        return jsonify({"ok": False, "error": f"Idioma '{lang}' no existe"}), 400
 
-    # Ensamblar
-    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
-    audio_path = AUDIO_DIR / audio_filename
+    is_video = upload_type in {"step_video", "call_video"}
+    if is_video:
+        ext = _resolve_video_extension(original_name)
+        if ext is None:
+            return jsonify({"ok": False, "error": "Solo MP4, WEBM o MOV"}), 400
+        target_dir = VIDEO_DIR
+        if upload_type == "call_video":
+            output_filename = f"{lang}_call{ext}"
+        else:
+            steps = messages[lang]["steps"]
+            if step < 0 or step >= len(steps):
+                return jsonify({"ok": False, "error": "Invalid step"}), 400
+            output_filename = f"{lang}_msg{step + 1}{ext}"
+    else:
+        if original_name and not original_name.lower().endswith(_ALLOWED_AUDIO_EXTENSIONS):
+            return jsonify({"ok": False, "error": "Solo MP3, OGG o WAV"}), 400
+        target_dir = AUDIO_DIR
+        if upload_type == "call":
+            output_filename = f"{lang}_call.mp3"
+        else:
+            steps = messages[lang]["steps"]
+            if step < 0 or step >= len(steps):
+                return jsonify({"ok": False, "error": "Invalid step"}), 400
+            output_filename = steps[step].get("audio") or f"{lang}_msg{step + 1}.mp3"
+
+    # Ensamblar de forma atómica
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / output_filename
+    temp_output = target_path.with_suffix(target_path.suffix + ".tmp")
     try:
-        with open(audio_path, "wb") as out:
+        with open(temp_output, "wb") as out:
             for i in range(total_chunks):
                 chunk_path = temp_dir / f"chunk_{i:04d}"
                 with open(chunk_path, "rb") as f_in:
                     out.write(f_in.read())
+        os.replace(temp_output, target_path)
     except Exception as e:
-        return jsonify({"ok": False, "error": f"Error escribiendo audio: {str(e)}"}), 500
+        temp_output.unlink(missing_ok=True)
+        return jsonify({"ok": False, "error": f"Error escribiendo archivo: {str(e)}"}), 500
 
-    # Si es call, actualizar messages.json
-    if upload_type == "call":
-        messages = load_messages_json()
-        if lang in messages:
-            if "call" not in messages[lang]:
-                messages[lang]["call"] = {"text": "📞 Llamada recibida", "audio": audio_filename}
+    # Actualizar messages.json
+    messages = load_messages_json()
+    if lang in messages:
+        if upload_type == "call":
+            if "call" not in messages[lang] or not isinstance(messages[lang]["call"], dict):
+                messages[lang]["call"] = {"text": "📞 Llamada recibida", "audio": output_filename, "video": ""}
             else:
-                messages[lang]["call"]["audio"] = audio_filename
+                messages[lang]["call"]["audio"] = output_filename
+            save_messages_json(messages)
+        elif upload_type == "call_video":
+            if "call" not in messages[lang] or not isinstance(messages[lang]["call"], dict):
+                messages[lang]["call"] = {"text": "📞 Llamada recibida", "audio": "", "video": output_filename}
+            else:
+                messages[lang]["call"]["video"] = output_filename
+            save_messages_json(messages)
+        elif upload_type == "step_video":
+            messages[lang]["steps"][step]["video"] = output_filename
+            save_messages_json(messages)
+        elif upload_type == "step" and messages[lang]["steps"][step].get("audio") != output_filename:
+            messages[lang]["steps"][step]["audio"] = output_filename
             save_messages_json(messages)
 
     # Limpiar temp
     shutil.rmtree(str(temp_dir), ignore_errors=True)
 
-    return jsonify({"ok": True, "filename": audio_filename})
+    return jsonify({"ok": True, "filename": output_filename})
 
 def is_bot_running():
     """Verifica si el bot responde haciendo un ping a Telegram API (user bot no tiene getMe)."""
@@ -3839,6 +4206,15 @@ def api_status():
     })
 
 
+def _telegram_bot_get_me(token: str) -> dict:
+    """Consulta getMe de BotFather por HTTPS sin exponer el token en procesos del sistema."""
+
+    url = f"https://api.telegram.org/bot{token}/getMe"
+    req = urllib.request.Request(url, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
 @app.route("/api/bf_status")
 def api_bf_status():
     """Estado del BotFather bot."""
@@ -3847,16 +4223,10 @@ def api_bf_status():
     result = {"linked": linked}
     if linked:
         try:
-            import subprocess
-            r = subprocess.run(
-                ["curl", "-s", "--connect-timeout", "5",
-                 f"https://api.telegram.org/bot{token}/getMe"],
-                capture_output=True, text=True, timeout=10
-            )
-            data = json.loads(r.stdout)
+            data = _telegram_bot_get_me(token)
             if data.get("ok"):
                 result["bot_name"] = data["result"].get("username", "")
-        except:
+        except Exception:
             pass
     return jsonify(result)
 
@@ -3864,32 +4234,29 @@ def api_bf_status():
 @app.route("/api/link_botfather", methods=["POST"])
 def api_link_botfather():
     """Valida y guarda el token de BotFather."""
-    import subprocess
-    data = request.get_json()
+    data = request.get_json() or {}
     token = (data.get("token") or "").strip()
 
-    if not token or ":" not in token:
+    if not token or ":" not in token or any(ch in token for ch in ("\r", "\n", " ")):
         return jsonify({"ok": False, "error": "Token inválido"}), 400
 
     # Validar con Telegram
     try:
-        r = subprocess.run(
-            ["curl", "-s", "--connect-timeout", "5",
-             f"https://api.telegram.org/bot{token}/getMe"],
-            capture_output=True, text=True, timeout=10
-        )
-        resp = json.loads(r.stdout)
+        resp = _telegram_bot_get_me(token)
         if not resp.get("ok"):
             return jsonify({"ok": False, "error": "Token inválido o revocado"}), 400
         bot_name = resp["result"].get("username", "desconocido")
+    except urllib.error.HTTPError:
+        return jsonify({"ok": False, "error": "Token inválido o revocado"}), 400
     except Exception as e:
         return jsonify({"ok": False, "error": f"Error validando: {str(e)}"}), 500
 
-    # Guardar en .env.local
+    # Guardar en .env.local de forma atómica
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
     env_file = DATA_DIR / ".env.local"
     lines = []
     if env_file.exists():
-        with open(env_file, "r") as f:
+        with open(env_file, "r", encoding="utf-8") as f:
             lines = f.readlines()
     new_lines = []
     found = False
@@ -3901,8 +4268,14 @@ def api_link_botfather():
             new_lines.append(line)
     if not found:
         new_lines.append(f"AUTOREPLY_BOT_TOKEN={token}\n")
-    with open(env_file, "w") as f:
+    temp_file = env_file.with_suffix(".tmp")
+    with open(temp_file, "w", encoding="utf-8", newline="\n") as f:
         f.writelines(new_lines)
+    try:
+        os.chmod(temp_file, 0o600)
+    except OSError:
+        pass
+    os.replace(temp_file, env_file)
 
     os.environ["AUTOREPLY_BOT_TOKEN"] = token
     return jsonify({"ok": True, "bot_name": bot_name})
@@ -3935,11 +4308,7 @@ def _tracked_wa_pid(pid_file: Path) -> int | None:
 
 def _is_wa_worker_pid(pid: int) -> bool:
     if sys.platform != "win32":
-        try:
-            cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "ignore")
-            return "wa_bot.mjs" in cmdline
-        except OSError:
-            return False
+        return "wa_bot.mjs" in _posix_process_command_line(pid)
     return "wa_bot.mjs" in _windows_process_command_line(pid).lower()
 
 
@@ -4891,18 +5260,11 @@ def api_start_botfather():
         return jsonify({"ok": False, "error": "Token no configurado"}), 400
 
     try:
-        import time, subprocess, sys
-        
-        # Asegurar que python-telegram-bot esté instalado
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "python-telegram-bot>=21.0", "-q"],
-            capture_output=True, timeout=30
-        )
-        
         bot_script = str(BASE_DIR / "botfather_bot.py")
         log_file = str(BASE_DIR / "botfather_bot.log")
-        pid_file = str(DATA_DIR / "botfather.pid")
-        with open(log_file, "a") as f:
+        pid_file = DATA_DIR / "botfather.pid"
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"\n--- Started at {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
             proc = subprocess.Popen(
                 [sys.executable, bot_script],
@@ -4910,9 +5272,9 @@ def api_start_botfather():
                 env=_channel_worker_environment(),
                 start_new_session=True
             )
-            # Guardar PID
-            with open(pid_file, "w") as pf:
-                pf.write(str(proc.pid))
+            pid_temp = pid_file.with_suffix(".tmp")
+            pid_temp.write_text(str(proc.pid), encoding="ascii")
+            os.replace(pid_temp, pid_file)
         return jsonify({"ok": True, "message": "BotFather iniciado"})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

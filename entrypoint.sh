@@ -9,13 +9,12 @@ echo "╚═══════════════════════�
 cd /app
 
 # ── 0. Instalar dependencias faltantes si es necesario ───────────────
-pip install 'python-telegram-bot>=21.0' 2>/dev/null || true
 if [ ! -d /app/node_modules/@whiskeysockets/baileys ]; then
     npm ci --omit=dev --ignore-scripts
 fi
 
 # ── 0b. Preparar directorio de datos persistente ─────────────────────
-mkdir -p /app/data/audios /app/data/wa_auth
+mkdir -p /app/data/audios /app/data/videos /app/data/wa_auth
 # Copiar defaults si no existen en data/
 [ -f /app/data/messages.json ] || cp /app/messages.json /app/data/messages.json
 [ -f /app/data/.env.local ] || touch /app/data/.env.local
@@ -26,6 +25,13 @@ for source_audio in /app/audios/*; do
     destination_audio="/app/data/audios/$(basename "$source_audio")"
     [ -f "$destination_audio" ] || cp "$source_audio" "$destination_audio"
 done
+if [ -d /app/videos ]; then
+    for source_video in /app/videos/*; do
+        [ -f "$source_video" ] || continue
+        destination_video="/app/data/videos/$(basename "$source_video")"
+        [ -f "$destination_video" ] || cp "$source_video" "$destination_video"
+    done
+fi
 # Corregir únicamente el M4A histórico conocido que tenía extensión .mp3.
 # El migrador compara hashes, crea respaldo y no toca audios personalizados.
 python /app/audio_migrations.py /app/data/audios /app/audios
@@ -85,4 +91,4 @@ fi
 
 # ── 5. Panel Admin ───────────────────────────────────────────────────
 echo "🖥️  Iniciando Panel Admin..."
-exec gunicorn -w 1 -b 0.0.0.0:5000 --access-logfile - --error-logfile - --timeout 120 app:app
+exec gunicorn -w 1 --threads 4 -b 0.0.0.0:5000 --access-logfile - --error-logfile - --timeout 120 app:app

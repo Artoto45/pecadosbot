@@ -53,6 +53,7 @@ from telegram_dispatcher import (
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 AUDIO_DIR = DATA_DIR / "audios"
+VIDEO_DIR = DATA_DIR / "videos"
 AUDIO_COVER_PATH = resolve_audio_cover_path(BASE_DIR)
 AUDIO_BRANDING_DEFAULTS_FILE = BASE_DIR / "telegram_audio_branding.defaults.json"
 AUDIO_BRANDING_SETTINGS_FILE = DATA_DIR / "telegram_audio_branding.json"
@@ -109,15 +110,25 @@ def load_messages() -> dict:
     result = {}
     for language, language_data in data.items():
         steps = language_data.get("steps", [])
+        call_raw = language_data.get(
+            "call",
+            {"text": "📞 Llamada recibida", "audio": "", "video": ""},
+        )
         result[language] = {
             "steps": [
-                (step.get("text", ""), step.get("audio", ""), bool(step.get("loop")))
+                (
+                    step.get("text", ""),
+                    step.get("audio", ""),
+                    bool(step.get("loop")),
+                    step.get("video", ""),
+                )
                 for step in steps
             ],
-            "call": language_data.get(
-                "call",
-                {"text": "📞 Llamada recibida", "audio": ""},
-            ),
+            "call": {
+                "text": call_raw.get("text", "📞 Llamada recibida"),
+                "audio": call_raw.get("audio", ""),
+                "video": call_raw.get("video", ""),
+            },
         }
     return result
 
@@ -151,17 +162,29 @@ def _language_data(language: str) -> dict:
     return next(iter(MESSAGES.values()), {"steps": [], "call": {}})
 
 
-def get_response_message(language: str, response_key: str) -> tuple[str, str]:
+def get_response_components(language: str, response_key: str) -> tuple[str, str, str]:
     language_data = _language_data(language)
     if response_key == "call":
         call_data = language_data.get("call", {})
-        return call_data.get("text", ""), call_data.get("audio", "")
+        return (
+            call_data.get("text", ""),
+            call_data.get("audio", ""),
+            call_data.get("video", ""),
+        )
 
     steps = language_data.get("steps", [])
     if not steps:
-        return "", ""
+        return "", "", ""
     index = 0 if response_key == "step1" else min(1, len(steps) - 1)
-    text, audio, _loop = steps[index]
+    step = steps[index]
+    text = step[0] if len(step) > 0 else ""
+    audio = step[1] if len(step) > 1 else ""
+    video = step[3] if len(step) > 3 else ""
+    return text, audio, video
+
+
+def get_response_message(language: str, response_key: str) -> tuple[str, str]:
+    text, audio, _video = get_response_components(language, response_key)
     return text, audio
 
 
@@ -190,8 +213,28 @@ interaction_health = {
         "peer_resolution": "never",
         "text": "never",
         "audio": "never",
+        "video": "never",
     },
 }
+_uploaded_media_cache: dict[str, tuple[int, int, object]] = {}
+
+
+async def _upload_file_cached(file_path: Path) -> object:
+    key = str(file_path.resolve())
+    stat = file_path.stat()
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = _uploaded_media_cache.get(key)
+    if cached is not None and cached[0] == signature[0] and cached[1] == signature[1]:
+        return cached[2]
+    uploaded = await client.upload_file(str(file_path))
+    if len(_uploaded_media_cache) >= 64:
+        _uploaded_media_cache.clear()
+    _uploaded_media_cache[key] = (signature[0], signature[1], uploaded)
+    return uploaded
+
+
+def _evict_upload_cache(file_path: Path) -> None:
+    _uploaded_media_cache.pop(str(file_path.resolve()), None)
 
 
 def update_interaction_health(**changes) -> None:
@@ -334,13 +377,14 @@ async def send_response(
     delivery_fingerprint: str,
 ) -> None:
     load_messages_fresh()
-    message_text, audio_file = get_response_message(language, response_key)
+    message_text, audio_file, video_file = get_response_components(language, response_key)
     update_interaction_health(
         last_response=response_key,
         delivery={
             "peer_resolution": "pending",
             "text": "pending" if message_text else "skipped",
             "audio": "pending" if audio_file else "skipped",
+            "video": "pending" if video_file else "skipped",
         },
     )
     resolved_peer = await _retry_telegram_operation(
@@ -361,8 +405,9 @@ async def send_response(
         )
 
     async def send_audio_message():
-        audio_path = AUDIO_DIR / audio_file
-        if not audio_path.exists():
+        safe_audio_name = Path(audio_file).name
+        audio_path = AUDIO_DIR / safe_audio_name
+        if not safe_audio_name or not audio_path.is_file():
             update_delivery_health("audio", "missing")
             raise FileNotFoundError(f"Configured Telegram audio is missing: {audio_file}")
         audio_attributes, audio_mime_type = utils.get_attributes(
@@ -378,12 +423,13 @@ async def send_response(
         )
 
         async def send_audio_media():
-            uploaded_file = await client.upload_file(str(audio_path))
+            uploaded_file = await _upload_file_cached(audio_path)
             uploaded_thumb = None
             if AUDIO_COVER_PATH.is_file():
                 try:
-                    uploaded_thumb = await client.upload_file(str(AUDIO_COVER_PATH))
+                    uploaded_thumb = await _upload_file_cached(AUDIO_COVER_PATH)
                 except (OSError, errors.RPCError) as exc:
+                    _evict_upload_cache(AUDIO_COVER_PATH)
                     logging.warning(
                         "Telegram audio cover upload failed (%s); sending without it",
                         type(exc).__name__,
@@ -400,13 +446,16 @@ async def send_response(
                     resolved_peer,
                     media,
                     delivery_fingerprint,
+                    component="audio",
                 )
 
             try:
                 return await client(media_request(uploaded_thumb))
             except errors.RPCError as exc:
+                _evict_upload_cache(audio_path)
                 if uploaded_thumb is None:
                     raise
+                _evict_upload_cache(AUDIO_COVER_PATH)
                 logging.warning(
                     "Telegram rejected the audio cover (%s); retrying without it",
                     type(exc).__name__,
@@ -418,10 +467,51 @@ async def send_response(
             send_audio_media,
         )
 
+    async def send_video_message():
+        safe_video_name = Path(video_file).name
+        video_path = VIDEO_DIR / safe_video_name
+        if not safe_video_name or not video_path.is_file():
+            update_delivery_health("video", "missing")
+            raise FileNotFoundError(f"Configured Telegram video is missing: {video_file}")
+        video_attributes, video_mime_type = utils.get_attributes(
+            str(video_path),
+            force_document=False,
+            voice_note=False,
+            video_note=False,
+            supports_streaming=True,
+        )
+
+        async def send_video_media():
+            uploaded_file = await _upload_file_cached(video_path)
+            media = types.InputMediaUploadedDocument(
+                file=uploaded_file,
+                mime_type=video_mime_type or "video/mp4",
+                attributes=list(video_attributes),
+                nosound_video=False,
+                force_file=False,
+            )
+            request = build_telegram_media_request(
+                resolved_peer,
+                media,
+                delivery_fingerprint,
+                component="video",
+            )
+            try:
+                return await client(request)
+            except errors.RPCError:
+                _evict_upload_cache(video_path)
+                raise
+
+        await _retry_telegram_operation(
+            "video_delivery",
+            send_video_media,
+        )
+
     await deliver_telegram_response_components(
         response_key,
         send_text=send_text_message if message_text else None,
         send_audio=send_audio_message if audio_file else None,
+        send_video=send_video_message if video_file else None,
     )
 
 

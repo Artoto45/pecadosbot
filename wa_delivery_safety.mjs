@@ -294,6 +294,12 @@ export function createWhatsAppDeliverySafety({
       const base = Math.min(Math.max(estimated, config.audioDelayMinMs), config.audioDelayMaxMs);
       return { presence: 'recording', delay: jittered(base) };
     }
+    if (content?.video) {
+      const bytes = Buffer.isBuffer(content.video) ? content.video.length : 0;
+      const estimated = bytes > 0 ? (bytes / 64_000) * 1000 : config.audioDelayMinMs;
+      const base = Math.min(Math.max(estimated, config.audioDelayMinMs), config.audioDelayMaxMs);
+      return { presence: 'composing', delay: jittered(base) };
+    }
     return { presence: null, delay: 0 };
   }
 

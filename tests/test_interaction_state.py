@@ -404,6 +404,71 @@ class PersistentInteractionStateTests(unittest.TestCase):
 
             self.assertEqual("step1", decision.response_key)
 
+    def test_inactivity_ttl_resets_phase_to_step1_while_preserving_language(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clock = [1_700_000_000.0]
+            store = self.make_store(
+                directory,
+                conversation_ttl_seconds=24 * 60 * 60,
+                now=lambda: clock[0],
+            )
+
+            first = store.register(
+                contact_id="customer",
+                event_id="msg:1",
+                kind="content",
+                detected_language="fr",
+                language_evidence=detect_language_evidence("bonjour"),
+            )
+            clock[0] += 3600  # 1h later
+            second = store.register(
+                contact_id="customer",
+                event_id="msg:2",
+                kind="content",
+            )
+            clock[0] += 24 * 60 * 60 + 1  # >24h of inactivity
+            preview = store.preview(
+                contact_id="customer",
+                event_id="msg:3",
+                kind="content",
+            )
+            third = store.register(
+                contact_id="customer",
+                event_id="msg:3",
+                kind="content",
+            )
+
+            self.assertEqual("step1", first.response_key)
+            self.assertEqual("fr", first.language)
+            self.assertEqual("step2", second.response_key)
+            self.assertEqual("fr", second.language)
+            self.assertEqual("step1", preview.response_key)
+            self.assertEqual("fr", preview.language)
+            self.assertEqual("step1", third.response_key)
+            self.assertEqual("fr", third.language)
+            self.assertEqual(1, third.phase)
+
+    def test_max_contacts_prunes_oldest_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            clock = [1_700_000_000.0]
+            store = self.make_store(
+                directory,
+                max_contacts=2,
+                now=lambda: clock[0],
+            )
+            for idx in (1, 2, 3):
+                clock[0] += 10
+                store.register(
+                    contact_id=f"c-{idx}",
+                    event_id=f"m-{idx}",
+                    kind="content",
+                )
+
+            self.assertEqual(2, len(store._contacts))
+            reloaded = self.make_store(directory, max_contacts=2, now=lambda: clock[0])
+            self.assertEqual("step1", reloaded.preview(contact_id="c-1", event_id="m-4", kind="content").response_key)
+            self.assertEqual("step2", reloaded.preview(contact_id="c-3", event_id="m-5", kind="content").response_key)
+
 
 if __name__ == "__main__":
     unittest.main()

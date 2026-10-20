@@ -642,3 +642,33 @@ test('an operational pause does not consume a step or mark the message read', as
   assert.deepEqual(effects, ['step1']);
   assert.equal(reads, 1);
 });
+
+test('entrega texto, audio y video en un paso cuando el video está configurado', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-message-video-'));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const state = new PersistentInteractionState({ filePath: path.join(directory, 'state.json') });
+  const effects = [];
+  const handler = createWhatsAppMessageHandler({
+    sendMessage: async (jid, content) => effects.push([jid, content]),
+    routeInteraction: details => state.register(details),
+    getResponseMessage: () => ({ text: 'Hola', audio: 'step1.mp3', video: 'step1.mp4' }),
+    readAudio: async () => Buffer.from('audio-bytes'),
+    readVideo: async () => ({ buffer: Buffer.from('video-bytes'), mimetype: 'video/mp4' }),
+    detectLanguage: () => 'es',
+    logger: { info() {}, warn() {}, error() {} },
+  });
+
+  const results = await handler({
+    type: 'notify',
+    messages: [incoming('video-msg-1', { conversation: 'hola' })],
+  });
+
+  assert.equal(results[0].text, 'sent');
+  assert.equal(results[0].audio, 'sent');
+  assert.equal(results[0].video, 'sent');
+  assert.equal(effects.length, 3);
+  assert.deepEqual(effects[2][1], {
+    video: Buffer.from('video-bytes'),
+    mimetype: 'video/mp4',
+  });
+});

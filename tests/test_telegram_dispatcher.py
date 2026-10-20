@@ -53,6 +53,39 @@ class TelegramInteractionDispatcherTests(unittest.IsolatedAsyncioTestCase):
 
                 self.assertEqual(["text", "audio"], order)
 
+    async def test_steps_and_call_deliver_video_in_expected_order(self):
+        step_order = []
+
+        async def send_text():
+            step_order.append("text")
+
+        async def send_audio():
+            step_order.append("audio")
+
+        async def send_video():
+            step_order.append("video")
+
+        await deliver_telegram_response_components(
+            "step1",
+            send_text=send_text,
+            send_audio=send_audio,
+            send_video=send_video,
+        )
+        self.assertEqual(["text", "audio", "video"], step_order)
+
+        call_order = []
+        await deliver_telegram_response_components(
+            "call",
+            send_text=lambda: self._append_async(call_order, "text"),
+            send_audio=lambda: self._append_async(call_order, "audio"),
+            send_video=lambda: self._append_async(call_order, "video"),
+        )
+        self.assertEqual(["audio", "video", "text"], call_order)
+
+    @staticmethod
+    async def _append_async(target: list, value: str) -> None:
+        target.append(value)
+
     async def test_call_partial_retry_reuses_component_random_ids(self):
         fingerprint = "f" * 64
         peer = types.InputPeerSelf()
@@ -404,12 +437,18 @@ class TelegramInteractionDispatcherTests(unittest.IsolatedAsyncioTestCase):
             fingerprint = fingerprints[0]
             text_id = telegram_delivery_random_id(fingerprint, "text")
             audio_id = telegram_delivery_random_id(fingerprint, "audio")
+            video_id = telegram_delivery_random_id(fingerprint, "video")
             self.assertEqual(text_id, telegram_delivery_random_id(fingerprint, "text"))
+            self.assertEqual(video_id, telegram_delivery_random_id(fingerprint, "video"))
             self.assertNotEqual(text_id, audio_id)
+            self.assertNotEqual(text_id, video_id)
+            self.assertNotEqual(audio_id, video_id)
             self.assertGreaterEqual(text_id, -(2**63))
             self.assertLessEqual(text_id, 2**63 - 1)
             self.assertGreaterEqual(audio_id, -(2**63))
             self.assertLessEqual(audio_id, 2**63 - 1)
+            self.assertGreaterEqual(video_id, -(2**63))
+            self.assertLessEqual(video_id, 2**63 - 1)
 
             text_request = build_telegram_text_request(
                 types.InputPeerSelf(),
@@ -421,10 +460,18 @@ class TelegramInteractionDispatcherTests(unittest.IsolatedAsyncioTestCase):
                 types.InputMediaEmpty(),
                 fingerprint,
             )
+            video_request = build_telegram_media_request(
+                types.InputPeerSelf(),
+                types.InputMediaEmpty(),
+                fingerprint,
+                component="video",
+            )
             self.assertIsInstance(text_request, functions.messages.SendMessageRequest)
             self.assertIsInstance(audio_request, functions.messages.SendMediaRequest)
+            self.assertIsInstance(video_request, functions.messages.SendMediaRequest)
             self.assertEqual(text_id, text_request.random_id)
             self.assertEqual(audio_id, audio_request.random_id)
+            self.assertEqual(video_id, video_request.random_id)
 
 
 if __name__ == "__main__":

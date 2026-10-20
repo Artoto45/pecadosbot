@@ -47,12 +47,14 @@ def build_telegram_media_request(
     peer: object,
     media: object,
     interaction_fingerprint: str,
+    *,
+    component: str = "audio",
 ):
     return functions.messages.SendMediaRequest(
         peer=peer,
         media=media,
         message="",
-        random_id=telegram_delivery_random_id(interaction_fingerprint, "audio"),
+        random_id=telegram_delivery_random_id(interaction_fingerprint, component),
     )
 
 
@@ -61,31 +63,32 @@ async def deliver_telegram_response_components(
     *,
     send_text: Callable[[], Awaitable[object]] | None,
     send_audio: Callable[[], Awaitable[object]] | None,
+    send_video: Callable[[], Awaitable[object]] | None = None,
 ) -> None:
     """Deliver one response in the channel-specific presentation order.
 
-    Calls intentionally put the audio first so Telegram renders the text below
-    it.  Normal conversation steps retain their historic text-then-audio order.
+    Calls intentionally put media first so Telegram renders the text below
+    it.  Normal conversation steps retain their historic text-then-media order.
     The component senders keep using their stable per-interaction ``random_id``;
     therefore replaying this orchestration after a partial/ambiguous failure is
     idempotent at Telegram's MTProto boundary.
     """
 
     if response_key != "call":
-        for sender in (send_text, send_audio):
+        for sender in (send_text, send_audio, send_video):
             if sender is not None:
                 await sender()
         return
 
     first_error: Exception | None = None
-    for sender in (send_audio, send_text):
+    for sender in (send_audio, send_video, send_text):
         if sender is None:
             continue
         try:
             await sender()
         except Exception as exc:
-            # A missing/failed audio must not suppress the useful call text.
-            # Re-raising after both attempts keeps the interaction uncommitted,
+            # A missing/failed media must not suppress the useful call text.
+            # Re-raising after all attempts keeps the interaction uncommitted,
             # allowing the stable component random_ids to make retries safe.
             if first_error is None:
                 first_error = exc
@@ -103,6 +106,18 @@ class TelegramInteractionDispatcher:
         self.send_response = send_response
         self._locks: dict[int, asyncio.Lock] = {}
 
+    def _prune_idle_locks(self, active_chat_id: int) -> None:
+        if len(self._locks) <= 1024:
+            return
+        for key in list(self._locks.keys()):
+            if key == active_chat_id:
+                continue
+            candidate = self._locks.get(key)
+            if candidate is not None and not candidate.locked():
+                self._locks.pop(key, None)
+                if len(self._locks) <= 512:
+                    break
+
     async def dispatch(
         self,
         *,
@@ -115,24 +130,9 @@ class TelegramInteractionDispatcher:
         reply_peer: object | None = None,
     ) -> InteractionDecision:
         lock = self._locks.setdefault(chat_id, asyncio.Lock())
-        async with lock:
-            decision = self.state.preview(
-                contact_id=chat_id,
-                event_id=event_id,
-                kind=kind,
-                detected_language=detected_language,
-                language_evidence=language_evidence,
-                provisional_language=provisional_language,
-            )
-            if not decision.duplicate and decision.response_key:
-                delivery_fingerprint = interaction_delivery_fingerprint(chat_id, event_id)
-                await self.send_response(
-                    reply_peer if reply_peer is not None else chat_id,
-                    decision.response_key,
-                    decision.language,
-                    delivery_fingerprint,
-                )
-                return self.state.register(
+        try:
+            async with lock:
+                decision = self.state.preview(
                     contact_id=chat_id,
                     event_id=event_id,
                     kind=kind,
@@ -140,4 +140,22 @@ class TelegramInteractionDispatcher:
                     language_evidence=language_evidence,
                     provisional_language=provisional_language,
                 )
-            return decision
+                if not decision.duplicate and decision.response_key:
+                    delivery_fingerprint = interaction_delivery_fingerprint(chat_id, event_id)
+                    await self.send_response(
+                        reply_peer if reply_peer is not None else chat_id,
+                        decision.response_key,
+                        decision.language,
+                        delivery_fingerprint,
+                    )
+                    return self.state.register(
+                        contact_id=chat_id,
+                        event_id=event_id,
+                        kind=kind,
+                        detected_language=detected_language,
+                        language_evidence=language_evidence,
+                        provisional_language=provisional_language,
+                    )
+                return decision
+        finally:
+            self._prune_idle_locks(chat_id)

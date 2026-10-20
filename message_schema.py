@@ -53,6 +53,18 @@ def normalize_message_schema(messages: object, defaults: object) -> tuple[dict, 
                         )
                     steps[index][field] = default_value
                     changed = True
+            default_video = default_step.get("video")
+            default_video_str = default_video.strip() if isinstance(default_video, str) else ""
+            current_video = steps[index].get("video")
+            if not isinstance(current_video, str):
+                steps[index]["video"] = default_video_str
+                changed = True
+            elif not current_video.strip() and default_video_str:
+                steps[index]["video"] = default_video_str
+                changed = True
+            elif current_video != current_video.strip():
+                steps[index]["video"] = current_video.strip()
+                changed = True
             desired_loop = index == 1
             if steps[index].get("loop") is not desired_loop:
                 steps[index]["loop"] = desired_loop
@@ -76,6 +88,20 @@ def normalize_message_schema(messages: object, defaults: object) -> tuple[dict, 
                     raise ValueError(f"Falta {field} en la llamada predeterminada de {language}")
                 call[field] = default_value
                 changed = True
+        default_call_video = default_call.get("video")
+        default_call_video_str = (
+            default_call_video.strip() if isinstance(default_call_video, str) else ""
+        )
+        current_call_video = call.get("video")
+        if not isinstance(current_call_video, str):
+            call["video"] = default_call_video_str
+            changed = True
+        elif not current_call_video.strip() and default_call_video_str:
+            call["video"] = default_call_video_str
+            changed = True
+        elif current_call_video != current_call_video.strip():
+            call["video"] = current_call_video.strip()
+            changed = True
 
     return normalized, changed
 
@@ -88,10 +114,16 @@ def load_message_file(
 ) -> dict:
     messages_path = Path(messages_path)
     defaults_path = Path(defaults_path)
-    messages = json.loads(messages_path.read_text(encoding="utf-8"))
     defaults = json.loads(defaults_path.read_text(encoding="utf-8"))
+    missing_live_file = not messages_path.is_file()
+    messages = (
+        deepcopy(defaults)
+        if missing_live_file
+        else json.loads(messages_path.read_text(encoding="utf-8"))
+    )
     normalized, changed = normalize_message_schema(messages, defaults)
-    if persist and changed:
+    if persist and (changed or missing_live_file):
+        messages_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = messages_path.with_suffix(messages_path.suffix + ".tmp")
         temporary_path.write_text(
             json.dumps(normalized, indent=2, ensure_ascii=False),

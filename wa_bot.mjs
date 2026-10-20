@@ -15,7 +15,7 @@ import { PersistentInteractionState } from './interaction_state.mjs';
 import { createWhatsAppMessageHandler } from './wa_message_handler.mjs';
 import { KeyedSerialQueue } from './keyed_serial_queue.mjs';
 import { classifyWhatsAppDisconnect } from './wa_disconnect_policy.mjs';
-import { createWhatsAppVoiceNoteReader } from './wa_audio_delivery.mjs';
+import { createWhatsAppVoiceNoteReader, createWhatsAppVideoReader } from './wa_audio_delivery.mjs';
 import { applyWhatsAppProfilePicture } from './wa_profile_picture.mjs';
 import { createWhatsAppSafetyHealth } from './wa_safety_health.mjs';
 import {
@@ -29,6 +29,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_DIR = path.resolve(process.env.BOT_DIR || __dirname);
 const DATA_DIR = path.join(BASE_DIR, 'data');
 const AUDIO_DIR = path.join(BASE_DIR, 'data', 'audios');
+const VIDEO_DIR = path.join(BASE_DIR, 'data', 'videos');
 const MESSAGES_FILE = path.join(BASE_DIR, 'data', 'messages.json');
 const AUTH_DIR = path.resolve(process.env.WA_AUTH_DIR || path.join(DATA_DIR, 'wa_auth'));
 const QR_PATH = path.resolve(process.env.WA_QR_PATH || path.join(BASE_DIR, 'wa_qr.png'));
@@ -203,9 +204,19 @@ function loadMessages() {
     if (!Array.isArray(langData.steps) || langData.steps.length < 2) {
       throw new Error(`[WA] El idioma ${lang} necesita Paso 1 y Paso 2`);
     }
+    const callRaw = langData.call || {};
     result[lang] = {
-      steps: langData.steps.map(s => ({ text: s.text, audio: s.audio, loop: s.loop || false })),
-      call: langData.call || { text: '📞 Llamada recibida', audio: '' }
+      steps: langData.steps.map(s => ({
+        text: s.text,
+        audio: s.audio,
+        video: s.video || '',
+        loop: s.loop || false,
+      })),
+      call: {
+        text: callRaw.text ?? '📞 Llamada recibida',
+        audio: callRaw.audio ?? '',
+        video: callRaw.video ?? '',
+      },
     };
   }
   return result;
@@ -250,12 +261,16 @@ function getResponseMessage(lang, responseKey) {
   return getMessage(lang, responseKey === 'step1' ? 0 : 1);
 }
 
-// ── Leer archivo de audio como buffer ──
+// ── Leer archivo de audio/video como buffer ──
 const readAudio = createWhatsAppVoiceNoteReader({
   audioDir: AUDIO_DIR,
   cacheDir: VOICE_NOTE_CACHE_DIR,
   ffmpegPath: process.env.FFMPEG_PATH || 'ffmpeg',
   enabled: VOICE_NOTES_ENABLED,
+  logger: console,
+});
+const readVideo = createWhatsAppVideoReader({
+  videoDir: VIDEO_DIR,
   logger: console,
 });
 
@@ -332,6 +347,7 @@ async function startBot() {
       serializeClaim: operation => interactionClaimQueue.run('all-inbound', operation),
       serializeInteraction: (contactId, operation) => deliveryQueue.run(contactId, operation),
       readAudio,
+      readVideo,
       logger: console,
       onCallMetric: callHealth.record,
       sendTimeoutMs: SAFETY_HANDLER_SEND_TIMEOUT_MS,
@@ -439,6 +455,7 @@ async function startBot() {
       routeInteraction: details => interactionState.register(details),
       getResponseMessage,
       readAudio,
+      readVideo,
       detectLanguage: detectLang,
       resolvePnForLid: async (lid) => (
         sock.signalRepository?.lidMapping?.getPNForLID

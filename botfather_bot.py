@@ -17,14 +17,20 @@ from botfather_language_state import (
     apply_message_language_evidence,
     detect_supported_language,
 )
+from message_schema import load_message_file
+from telegram_audio_branding import resolve_audio_branding
 
 # ── Config ────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 AUDIO_DIR = DATA_DIR / "audios"
+VIDEO_DIR = DATA_DIR / "videos"
+AUDIO_BRANDING_DEFAULTS_FILE = BASE_DIR / "telegram_audio_branding.defaults.json"
+AUDIO_BRANDING_SETTINGS_FILE = DATA_DIR / "telegram_audio_branding.json"
 MESSAGES_FILE = DATA_DIR / "messages.json"
 DEFAULT_MESSAGES_FILE = BASE_DIR / "messages.json"
-RESET_TIMEOUT = 3600
+RESET_TIMEOUT = int(float(os.environ.get("AUTOREPLY_CONVERSATION_TTL_SECONDS", "86400")))
+MAX_USER_STATE_ENTRIES = 10_000
 
 BOT_TOKEN = os.environ.get("AUTOREPLY_BOT_TOKEN")
 
@@ -53,14 +59,26 @@ if not BOT_TOKEN:
 # ── Mensajes ───────────────────────────────────────────────────────────
 def load_messages() -> dict:
     source = MESSAGES_FILE if MESSAGES_FILE.is_file() else DEFAULT_MESSAGES_FILE
-    with open(source, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    data = load_message_file(source, DEFAULT_MESSAGES_FILE)
     result = {}
     for lang, lang_data in data.items():
         steps = lang_data.get("steps", [])
+        call_raw = lang_data.get("call", {"text": "📞 Llamada recibida", "audio": "", "video": ""})
         result[lang] = {
-            "steps": [(s["text"], s["audio"], s.get("loop", False)) for s in steps],
-            "call": lang_data.get("call", {"text": "📞 Llamada recibida", "audio": ""})
+            "steps": [
+                (
+                    s.get("text", ""),
+                    s.get("audio", ""),
+                    bool(s.get("loop", False)),
+                    s.get("video", ""),
+                )
+                for s in steps
+            ],
+            "call": {
+                "text": call_raw.get("text", "📞 Llamada recibida"),
+                "audio": call_raw.get("audio", ""),
+                "video": call_raw.get("video", ""),
+            },
         }
     return result
 
@@ -68,6 +86,22 @@ MESSAGES = load_messages()
 
 # ── Estado por usuario ────────────────────────────────────────────────
 user_state: dict[int, dict] = {}
+
+
+def _prune_user_state(keep_chat_id: int | None = None) -> None:
+    if len(user_state) <= MAX_USER_STATE_ENTRIES:
+        return
+    excess = len(user_state) - MAX_USER_STATE_ENTRIES
+    candidates = sorted(
+        (
+            (float(data.get("last_seen", 0)), cid)
+            for cid, data in user_state.items()
+            if cid != keep_chat_id
+        ),
+        key=lambda item: item[0],
+    )
+    for _, cid in candidates[:excess]:
+        user_state.pop(cid, None)
 
 
 def _claim_message(state: dict, message: object) -> bool:
@@ -121,11 +155,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if state is not None:
             logging.info("BotFather conversation cycle expired")
         load_messages_fresh()
-        state = {"step": 0, "last_seen": now}
+        preserved = {}
+        if isinstance(state, dict):
+            for key in (
+                "lang",
+                "language_provisional",
+                "language_source",
+                "language_candidate",
+                "language_candidate_streak",
+            ):
+                if key in state:
+                    preserved[key] = state[key]
+        state = {"step": 0, "last_seen": now, **preserved}
         if not _claim_message(state, update.message):
             return
         apply_message_language_evidence(state, update.message)
         user_state[chat_id] = state
+        _prune_user_state(chat_id)
         step_to_use = 0
     else:
         if not _claim_message(state, update.message):
@@ -137,21 +183,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lang = state["lang"]
     lang_data = MESSAGES.get(lang, MESSAGES["en"])
-    msg_text, audio_file, is_loop = lang_data["steps"][step_to_use]
+    step_tuple = lang_data["steps"][step_to_use]
+    msg_text, audio_file, is_loop = step_tuple[0], step_tuple[1], step_tuple[2]
+    video_file = step_tuple[3] if len(step_tuple) > 3 else ""
 
     if not is_loop:
         state["step"] = step_to_use
 
-    await update.message.reply_text(msg_text)
+    if msg_text:
+        await update.message.reply_text(msg_text)
 
-    audio_path = AUDIO_DIR / audio_file
-    if audio_path.exists():
-        with open(audio_path, "rb") as f:
-            await update.message.reply_audio(
-                audio=f,
-                title=f"AutoReply ({lang.upper()})",
-                performer="AutoReply BotFather",
+    if audio_file:
+        safe_audio = Path(audio_file).name
+        audio_path = AUDIO_DIR / safe_audio
+        if safe_audio and audio_path.is_file():
+            title, performer = resolve_audio_branding(
+                defaults_path=AUDIO_BRANDING_DEFAULTS_FILE,
+                settings_path=AUDIO_BRANDING_SETTINGS_FILE,
             )
+            with open(audio_path, "rb") as f:
+                await update.message.reply_audio(
+                    audio=f,
+                    title=title,
+                    performer=performer,
+                )
+
+    if video_file and hasattr(update.message, "reply_video"):
+        safe_video = Path(video_file).name
+        video_path = VIDEO_DIR / safe_video
+        if safe_video and video_path.is_file():
+            with open(video_path, "rb") as vf:
+                await update.message.reply_video(
+                    video=vf,
+                    supports_streaming=True,
+                )
 
     logging.info(
         "BotFather message processed lang=%s step=%s",
@@ -169,11 +234,23 @@ async def handle_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = time.time()
     if state is None or is_expired(state):
         load_messages_fresh()
-        state = {"step": 0, "last_seen": now}
+        preserved = {}
+        if isinstance(state, dict):
+            for key in (
+                "lang",
+                "language_provisional",
+                "language_source",
+                "language_candidate",
+                "language_candidate_streak",
+            ):
+                if key in state:
+                    preserved[key] = state[key]
+        state = {"step": 0, "last_seen": now, **preserved}
         if not _claim_message(state, update.message):
             return
         apply_message_language_evidence(state, update.message)
         user_state[chat_id] = state
+        _prune_user_state(chat_id)
     else:
         if not _claim_message(state, update.message):
             logging.info("BotFather duplicate interaction ignored")
@@ -183,24 +260,44 @@ async def handle_call(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = state["lang"]
 
     lang_data = MESSAGES.get(lang, MESSAGES["en"])
-    call_data = lang_data.get("call", {"text": "📞 Llamada recibida", "audio": ""})
+    call_data = lang_data.get("call", {"text": "📞 Llamada recibida", "audio": "", "video": ""})
     msg_text = call_data.get("text", "📞 Llamada recibida")
     audio_file = call_data.get("audio", "")
+    video_file = call_data.get("video", "")
 
-    try:
-        await update.message.reply_text(msg_text)
-    except Exception:
-        pass
+    if msg_text:
+        try:
+            await update.message.reply_text(msg_text)
+        except Exception:
+            pass
 
     if audio_file:
-        audio_path = AUDIO_DIR / audio_file
-        if audio_path.exists():
+        safe_audio = Path(audio_file).name
+        audio_path = AUDIO_DIR / safe_audio
+        if safe_audio and audio_path.is_file():
+            title, performer = resolve_audio_branding(
+                defaults_path=AUDIO_BRANDING_DEFAULTS_FILE,
+                settings_path=AUDIO_BRANDING_SETTINGS_FILE,
+            )
             with open(audio_path, "rb") as f:
                 try:
                     await update.message.reply_audio(
                         audio=f,
-                        title=f"AutoReply ({lang.upper()}) - Call",
-                        performer="AutoReply BotFather",
+                        title=title,
+                        performer=performer,
+                    )
+                except Exception:
+                    pass
+
+    if video_file and hasattr(update.message, "reply_video"):
+        safe_video = Path(video_file).name
+        video_path = VIDEO_DIR / safe_video
+        if safe_video and video_path.is_file():
+            with open(video_path, "rb") as vf:
+                try:
+                    await update.message.reply_video(
+                        video=vf,
+                        supports_streaming=True,
                     )
                 except Exception:
                     pass

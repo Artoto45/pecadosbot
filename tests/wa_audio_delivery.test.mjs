@@ -5,8 +5,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  createWhatsAppVideoReader,
   createWhatsAppVoiceNoteReader,
   toWhatsAppAudioContent,
+  toWhatsAppVideoContent,
 } from '../wa_audio_delivery.mjs';
 
 function createFixture(t) {
@@ -92,4 +94,24 @@ test('rechaza rutas fuera del directorio de audios', async (t) => {
   });
 
   assert.equal(await reader('../secret.mp3'), null);
+});
+
+test('lector de video entrega buffer con mimetype mp4 y bloquea path traversal', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-video-delivery-'));
+  const videoDir = path.join(root, 'videos');
+  fs.mkdirSync(videoDir);
+  fs.writeFileSync(path.join(videoDir, 'promo.mp4'), Buffer.from('mp4-bytes'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+
+  const readVideo = createWhatsAppVideoReader({
+    videoDir,
+    logger: { warn() {} },
+  });
+  const payload = await readVideo('promo.mp4');
+  assert.deepEqual(toWhatsAppVideoContent(payload), {
+    video: Buffer.from('mp4-bytes'),
+    mimetype: 'video/mp4',
+  });
+  assert.equal(await readVideo('../secret.mp4'), null);
+  assert.equal(await readVideo('missing.mp4'), null);
 });

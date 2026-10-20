@@ -9,6 +9,18 @@ import {
 } from './language_adaptation.mjs';
 
 const VALID_KINDS = new Set(['call', 'content']);
+const DEFAULT_CONVERSATION_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_MAX_CONTACTS = 10_000;
+
+function resolveDefaultTtlMs() {
+  const raw = process.env.AUTOREPLY_CONVERSATION_TTL_SECONDS;
+  if (raw === undefined || raw === null || String(raw).trim() === '') {
+    return DEFAULT_CONVERSATION_TTL_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return DEFAULT_CONVERSATION_TTL_MS;
+  return Math.max(0, parsed * 1000);
+}
 
 function fingerprint(namespace, value) {
   return crypto.createHash('sha256').update(`${namespace}\0${String(value)}`, 'utf8').digest('hex');
@@ -19,6 +31,8 @@ export class PersistentInteractionState {
     filePath,
     defaultLanguage = 'es',
     maxRecentEvents = 256,
+    maxContacts = DEFAULT_MAX_CONTACTS,
+    conversationTtlMs = null,
     now = () => Date.now(),
     logger = console,
   }) {
@@ -29,15 +43,54 @@ export class PersistentInteractionState {
     if (!Number.isInteger(maxRecentEvents) || maxRecentEvents < 1) {
       throw new TypeError('maxRecentEvents must be a positive integer');
     }
+    if (!Number.isInteger(maxContacts) || maxContacts < 1) {
+      throw new TypeError('maxContacts must be a positive integer');
+    }
 
     this.filePath = filePath;
     this.defaultLanguage = defaultLanguage;
     this.maxRecentEvents = maxRecentEvents;
+    this.maxContacts = maxContacts;
+    this.explicitTtl = conversationTtlMs !== null && conversationTtlMs !== undefined;
+    this.conversationTtlMs = this.explicitTtl
+      ? Math.max(0, Number(conversationTtlMs))
+      : resolveDefaultTtlMs();
     this.now = now;
     this.logger = logger;
     this.contacts = {};
     this.aliases = {};
     this.load();
+  }
+
+  isConversationExpired(state, currentTime) {
+    if (!state || !state.phase) return false;
+    if (!Number.isFinite(this.conversationTtlMs) || this.conversationTtlMs <= 0) return false;
+    const updatedAt = state.updated_at;
+    if (!Number.isFinite(updatedAt) || updatedAt <= 0) return false;
+    if (!this.explicitTtl && updatedAt < 1_000_000_000 && currentTime >= 1_000_000_000) {
+      return false;
+    }
+    return (currentTime - updatedAt) >= this.conversationTtlMs;
+  }
+
+  pruneContacts(keepKey = null) {
+    const entries = Object.entries(this.contacts);
+    if (entries.length <= this.maxContacts) return;
+    const excess = entries.length - this.maxContacts;
+    const candidates = entries
+      .filter(([key, data]) => key !== keepKey && !data?.reset_pending)
+      .sort((a, b) => (Number(a[1]?.updated_at) || 0) - (Number(b[1]?.updated_at) || 0));
+    const removed = new Set(candidates.slice(0, excess).map(([key]) => key));
+    for (const key of removed) {
+      delete this.contacts[key];
+    }
+    if (removed.size > 0) {
+      for (const [aliasKey, targetKey] of Object.entries(this.aliases)) {
+        if (removed.has(targetKey) || !this.contacts[targetKey]) {
+          delete this.aliases[aliasKey];
+        }
+      }
+    }
   }
 
   load() {
@@ -68,6 +121,7 @@ export class PersistentInteractionState {
           }
         }
       }
+      this.pruneContacts();
     } catch {
       this.logger.error?.('[STATE] Interaction state could not be loaded; starting empty');
       this.contacts = {};
@@ -194,6 +248,11 @@ export class PersistentInteractionState {
     }));
     const language = state.language || this.defaultLanguage;
 
+    const currentTime = this.now();
+    if (this.isConversationExpired(state, currentTime)) {
+      state.phase = 0;
+    }
+
     let responseKey;
     if (kind === 'call') {
       responseKey = 'call';
@@ -210,8 +269,9 @@ export class PersistentInteractionState {
     if (state.recent_events.length > this.maxRecentEvents) {
       state.recent_events.splice(0, state.recent_events.length - this.maxRecentEvents);
     }
-    state.updated_at = this.now();
+    state.updated_at = currentTime;
     delete state.reset_pending;
+    this.pruneContacts(canonicalKey);
     const persisted = this.save();
 
     return {

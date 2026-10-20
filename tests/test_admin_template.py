@@ -1,11 +1,15 @@
+import io
+import json
 import re
 import shutil
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 import app as app_module
+from tests.admin_session import grant_operator_admin, install_operator_key
 
 
 class AdminTemplateTestCase(unittest.TestCase):
@@ -293,6 +297,102 @@ class AdminTemplateTestCase(unittest.TestCase):
         self.assertIn("review_confirmed", template)
         self.assertIn("setInterval(loadWaSafetyHealth, 10000);", template)
         self.assertNotIn("Cambiar Número Ahora", template)
+
+    def test_video_controls_and_chunked_video_upload_routes_work(self):
+        template = app_module.TEMPLATE
+        self.assertIn("uploadVideo(", template)
+        self.assertIn("uploadCallVideo(", template)
+        self.assertIn("removeStepVideo(", template)
+        self.assertIn("removeCallVideo(", template)
+        self.assertIn("/api/video/", template)
+
+        operator_key = install_operator_key(self)
+        app_module.app.config.update(TESTING=True)
+        client = app_module.app.test_client()
+        csrf = "v" * 48
+        grant_operator_admin(client, operator_key, csrf=csrf)
+        headers = {"X-Channel-CSRF": csrf}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary) / "data"
+            audio_dir = data_dir / "audios"
+            video_dir = data_dir / "videos"
+            messages_file = data_dir / "messages.json"
+            with (
+                patch.object(app_module, "DATA_DIR", data_dir),
+                patch.object(app_module, "AUDIO_DIR", audio_dir),
+                patch.object(app_module, "VIDEO_DIR", video_dir),
+                patch.object(app_module, "MESSAGES_FILE", messages_file),
+            ):
+                # Reject path traversal in upload_chunk
+                bad_chunk = client.post(
+                    "/api/upload_chunk",
+                    data={
+                        "lang": "../etc",
+                        "type": "step_video",
+                        "step": 0,
+                        "chunk_index": 0,
+                        "total_chunks": 1,
+                        "chunk": (io.BytesIO(b"video-bytes"), "clip.mp4"),
+                    },
+                    headers=headers,
+                    content_type="multipart/form-data",
+                )
+                self.assertEqual(400, bad_chunk.status_code)
+
+                # Valid chunked step video upload + assemble
+                ok_chunk = client.post(
+                    "/api/upload_chunk",
+                    data={
+                        "lang": "es",
+                        "type": "step_video",
+                        "step": 0,
+                        "chunk_index": 0,
+                        "total_chunks": 1,
+                        "original_name": "intro.mp4",
+                        "chunk": (io.BytesIO(b"\x00\x00\x00\x18ftypmp42"), "intro.mp4"),
+                    },
+                    headers=headers,
+                    content_type="multipart/form-data",
+                )
+                self.assertEqual(200, ok_chunk.status_code)
+
+                assembled = client.post(
+                    "/api/upload_assemble",
+                    json={
+                        "lang": "es",
+                        "type": "step_video",
+                        "step": 0,
+                        "total_chunks": 1,
+                        "original_name": "intro.mp4",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(200, assembled.status_code)
+                self.assertEqual("es_msg1.mp4", assembled.get_json()["filename"])
+                self.assertTrue((video_dir / "es_msg1.mp4").is_file())
+
+                saved = json.loads(messages_file.read_text(encoding="utf-8"))
+                self.assertEqual("es_msg1.mp4", saved["es"]["steps"][0]["video"])
+
+                # Remove step video
+                removed = client.post(
+                    "/api/messages",
+                    json={"lang": "es", "step": 0, "action": "delete_step_video"},
+                    headers=headers,
+                )
+                self.assertEqual(200, removed.status_code)
+                saved_after = json.loads(messages_file.read_text(encoding="utf-8"))
+                self.assertEqual("", saved_after["es"]["steps"][0]["video"])
+
+    def test_posix_process_command_line_falls_back_to_ps_when_proc_unavailable(self):
+        fake_ps = Mock(returncode=0, stdout="/usr/bin/python3 /app/bot.py\n")
+        with (
+            patch.object(app_module.sys, "platform", "darwin"),
+            patch.object(app_module.subprocess, "run", return_value=fake_ps) as run_mock,
+        ):
+            self.assertTrue(app_module._is_telegram_worker_pid(4321))
+            run_mock.assert_called_once()
 
 
 if __name__ == "__main__":
