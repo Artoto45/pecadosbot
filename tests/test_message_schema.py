@@ -103,5 +103,25 @@ class MessageSchemaTests(unittest.TestCase):
         self.assertEqual("", normalized["es"]["steps"][1]["video"])
         self.assertEqual("es_call.mp4", normalized["es"]["call"]["video"])
 
+    def test_normalizes_custom_modular_language_not_in_defaults(self):
+        live = {
+            "es": DEFAULTS["es"],
+            "pt": {
+                "lang_name": "Português",
+                "steps": [{"text": "Olá!"}],
+            },
+        }
+        normalized, changed = normalize_message_schema(live, DEFAULTS)
+
+        self.assertTrue(changed)
+        self.assertIn("pt", normalized)
+        self.assertEqual("Português", normalized["pt"]["lang_name"])
+        self.assertEqual(2, len(normalized["pt"]["steps"]))
+        self.assertEqual("Olá!", normalized["pt"]["steps"][0]["text"])
+        self.assertEqual("pt_msg1.mp3", normalized["pt"]["steps"][0]["audio"])
+        self.assertFalse(normalized["pt"]["steps"][0]["loop"])
+        self.assertTrue(normalized["pt"]["steps"][1]["loop"])
+        self.assertEqual("pt_call.mp3", normalized["pt"]["call"]["audio"])
+
 if __name__ == "__main__":
     unittest.main()

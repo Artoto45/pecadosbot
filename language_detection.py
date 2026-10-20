@@ -1,18 +1,21 @@
-"""Shared, bounded language evidence for Spanish, English, and French."""
+"""Shared, bounded language evidence for configured and modular languages."""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import unicodedata
 from typing import Any
 
 
-LANGUAGES = ("es", "en", "fr")
 _RULES_PATH = Path(__file__).with_name("language_rules.json")
+_DEFAULT_CUSTOM_RULES_PATH = Path(__file__).with_name("data") / "language_rules.custom.json"
+_LANG_CODE_PATTERN = re.compile(r"^[a-z]{2,5}$")
 _TOKEN_PATTERN = re.compile(r"[^\W_]+", flags=re.UNICODE)
 _APOSTROPHES = str.maketrans({"’": "'", "‘": "'", "`": "'", "´": "'"})
+LANGUAGES: tuple[str, ...] = ("es", "en", "fr", "it")
 
 
 def _normalize_unbounded(text: str) -> str:
@@ -109,9 +112,12 @@ def _load_rules() -> dict[str, Any]:
 
     name_targets: dict[str, str] = {}
     compiled_rules: dict[str, list[dict[str, Any]]] = {}
-    if set(names) != set(LANGUAGES) or set(rules) != set(LANGUAGES):
-        raise ValueError("language rules must define exactly es, en, and fr")
-    for language in LANGUAGES:
+    if not rules or set(names) != set(rules):
+        raise ValueError("language rules must define matching language_names and rules")
+    configured_languages = tuple(rules.keys())
+    for language in configured_languages:
+        if not isinstance(language, str) or not _LANG_CODE_PATTERN.fullmatch(language):
+            raise ValueError(f"invalid language code: {language}")
         raw_names = names[language]
         raw_rules = rules[language]
         if (
@@ -145,6 +151,53 @@ def _load_rules() -> dict[str, Any]:
                 {"tokens": tokens, "weight": weight, "decisive": decisive}
             )
         compiled_rules[language] = compiled_language_rules
+
+    custom_path_env = os.environ.get("CUSTOM_LANGUAGE_RULES_FILE", "").strip()
+    custom_path = Path(custom_path_env) if custom_path_env else _DEFAULT_CUSTOM_RULES_PATH
+    if custom_path.is_file():
+        try:
+            custom_payload = json.loads(custom_path.read_text(encoding="utf-8"))
+            custom_langs = (
+                custom_payload.get("languages", {})
+                if isinstance(custom_payload, dict)
+                else {}
+            )
+            if isinstance(custom_langs, dict):
+                for raw_code, spec in custom_langs.items():
+                    if (
+                        not isinstance(raw_code, str)
+                        or not _LANG_CODE_PATTERN.fullmatch(raw_code)
+                        or not isinstance(spec, dict)
+                    ):
+                        continue
+                    compiled_rules.setdefault(raw_code, [])
+                    existing_seen = {r["tokens"] for r in compiled_rules[raw_code]}
+                    for raw_name in spec.get("language_names", []) if isinstance(spec.get("language_names"), list) else []:
+                        tokens = tuple(_tokens_unbounded(raw_name)) if isinstance(raw_name, str) else ()
+                        if len(tokens) == 1 and tokens[0] not in name_targets and tokens[0] not in normalized_neutral:
+                            name_targets[tokens[0]] = raw_code
+                    for raw_rule in spec.get("rules", []) if isinstance(spec.get("rules"), list) else []:
+                        if not isinstance(raw_rule, dict):
+                            continue
+                        tokens = tuple(_tokens_unbounded(raw_rule.get("term", "")))
+                        weight = raw_rule.get("weight", 7)
+                        decisive = raw_rule.get("decisive", True)
+                        if (
+                            not tokens
+                            or isinstance(weight, bool)
+                            or not isinstance(weight, int)
+                            or weight < 1
+                            or not isinstance(decisive, bool)
+                            or tokens in existing_seen
+                            or (len(tokens) == 1 and tokens[0] in normalized_neutral)
+                        ):
+                            continue
+                        existing_seen.add(tokens)
+                        compiled_rules[raw_code].append(
+                            {"tokens": tokens, "weight": weight, "decisive": decisive}
+                        )
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
 
     negation_tokens: set[str] = set()
     for term in negation["tokens"]:
@@ -210,10 +263,25 @@ def _load_rules() -> dict[str, Any]:
         "sequences": tuple(negation_sequences),
     }
     parsed["rules"] = compiled_rules
+    parsed["languages"] = tuple(compiled_rules.keys())
     return parsed
 
 
 _RULES = _load_rules()
+LANGUAGES = _RULES["languages"]
+
+
+def reload_language_rules() -> tuple[str, ...]:
+    """Reload base and custom language detection rules at runtime."""
+
+    global _RULES, LANGUAGES
+    _RULES = _load_rules()
+    LANGUAGES = _RULES["languages"]
+    return LANGUAGES
+
+
+def get_supported_languages() -> tuple[str, ...]:
+    return _RULES["languages"]
 
 
 def normalize_language_text(text: str) -> str:
@@ -337,8 +405,9 @@ def detect_language_evidence(text: str) -> dict[str, object]:
 
     clauses = _tokenize_language_clauses(text)
     tokens = [token for clause in clauses for token in clause]
-    scores = {language: 0 for language in LANGUAGES}
-    decisive = {language: False for language in LANGUAGES}
+    active_languages = _RULES["languages"]
+    scores = {language: 0 for language in active_languages}
+    decisive = {language: False for language in active_languages}
     last_directive: dict[str, str] = {}
 
     last_positive_group: set[str] = set()
@@ -376,7 +445,7 @@ def detect_language_evidence(text: str) -> dict[str, object]:
         if directive == "negative"
     }
 
-    for language in LANGUAGES:
+    for language in active_languages:
         if language in explicit_hits:
             scores[language] += _RULES["thresholds"]["explicit_weight"]
         for rule in _RULES["rules"][language]:

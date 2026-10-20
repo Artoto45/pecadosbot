@@ -27,9 +27,10 @@
     "hey"
   ],
   "language_names": {
-    "es": ["espanol", "castellano", "spanish", "espagnol"],
-    "en": ["english", "ingles", "anglais"],
-    "fr": ["francais", "frances", "french"]
+    "es": ["espanol", "castellano", "spanish", "espagnol", "spagnolo"],
+    "en": ["english", "ingles", "anglais", "inglese"],
+    "fr": ["francais", "frances", "french", "francese"],
+    "it": ["italiano", "italian", "italien"]
   },
   "explicit_context": {
     "prefixes": [
@@ -39,12 +40,14 @@
       "habla en", "hablame en", "responde en", "contesta en",
       "parle", "parlez", "comprends", "comprenez", "reponds", "repondez",
       "parle en", "parlez en", "reponds en", "repondez en",
-      "prefer", "prefiero", "prefiere", "prefere", "preferez",
-      "without", "sans", "sin"
+      "parlo", "capisco", "parla", "parlami", "rispondi",
+      "parla in", "parlami in", "rispondi in",
+      "prefer", "prefiero", "prefiere", "prefere", "preferez", "preferisco",
+      "without", "sans", "sin", "senza"
     ],
-    "courtesy_suffixes": ["please", "por favor", "s il vous plait"],
+    "courtesy_suffixes": ["please", "por favor", "s il vous plait", "per favore", "per piacere"],
     "contrastive_connectors": [
-      "but", "however", "rather", "pero", "sino", "mejor", "mais", "plutot"
+      "but", "however", "rather", "pero", "sino", "mejor", "mais", "plutot", "ma", "invece"
     ]
   },
   "negation": {
@@ -193,6 +196,41 @@
       {"term": "fille disponible", "weight": 7, "decisive": true},
       {"term": "sont", "weight": 3, "decisive": false},
       {"term": "sont disponibles", "weight": 4, "decisive": true}
+    ],
+    "it": [
+      {"term": "ciao", "weight": 7, "decisive": true},
+      {"term": "buongiorno", "weight": 7, "decisive": true},
+      {"term": "buonasera", "weight": 7, "decisive": true},
+      {"term": "salve", "weight": 7, "decisive": true},
+      {"term": "grazie", "weight": 7, "decisive": true},
+      {"term": "per favore", "weight": 7, "decisive": true},
+      {"term": "per piacere", "weight": 7, "decisive": true},
+      {"term": "ragazze", "weight": 4, "decisive": true},
+      {"term": "ragazza", "weight": 4, "decisive": true},
+      {"term": "ragazza disponibile", "weight": 7, "decisive": true},
+      {"term": "ragazze disponibili", "weight": 7, "decisive": true},
+      {"term": "disponibile", "weight": 4, "decisive": true},
+      {"term": "disponibili", "weight": 4, "decisive": true},
+      {"term": "vorrei", "weight": 4, "decisive": true},
+      {"term": "voglio", "weight": 4, "decisive": false},
+      {"term": "cerco", "weight": 4, "decisive": false},
+      {"term": "sto cercando", "weight": 7, "decisive": true},
+      {"term": "prenotare", "weight": 4, "decisive": true},
+      {"term": "prenotazione", "weight": 4, "decisive": true},
+      {"term": "prezzo", "weight": 4, "decisive": false},
+      {"term": "prezzi", "weight": 4, "decisive": false},
+      {"term": "tariffa", "weight": 4, "decisive": false},
+      {"term": "tariffe", "weight": 4, "decisive": false},
+      {"term": "informazioni", "weight": 4, "decisive": true},
+      {"term": "mandami informazioni", "weight": 7, "decisive": true},
+      {"term": "non parlo", "weight": 7, "decisive": true},
+      {"term": "non capisco", "weight": 7, "decisive": true},
+      {"term": "aiuto", "weight": 4, "decisive": true},
+      {"term": "dove", "weight": 4, "decisive": false},
+      {"term": "quando", "weight": 4, "decisive": false},
+      {"term": "quanto", "weight": 4, "decisive": false},
+      {"term": "puoi", "weight": 3, "decisive": false},
+      {"term": "puoi mandare", "weight": 4, "decisive": true}
     ]
   }
 }

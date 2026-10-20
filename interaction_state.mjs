@@ -4,6 +4,7 @@ import path from 'path';
 
 import {
   VALID_LANGUAGES,
+  isValidLanguage,
   reduceLanguageState,
   sanitizeLanguageState,
 } from './language_adaptation.mjs';
@@ -37,8 +38,8 @@ export class PersistentInteractionState {
     logger = console,
   }) {
     if (!filePath) throw new TypeError('filePath is required');
-    if (!VALID_LANGUAGES.has(defaultLanguage)) {
-      throw new TypeError('defaultLanguage must be es, en, or fr');
+    if (!isValidLanguage(defaultLanguage)) {
+      throw new TypeError('defaultLanguage must be a valid language code');
     }
     if (!Number.isInteger(maxRecentEvents) || maxRecentEvents < 1) {
       throw new TypeError('maxRecentEvents must be a positive integer');
@@ -162,7 +163,7 @@ export class PersistentInteractionState {
       throw new TypeError('eventId is required');
     }
     if (!VALID_KINDS.has(kind)) throw new TypeError('kind must be call or content');
-    if (!VALID_LANGUAGES.has(provisionalLanguage)) provisionalLanguage = null;
+    if (!isValidLanguage(provisionalLanguage)) provisionalLanguage = null;
 
     const identityValues = [contactId, ...(Array.isArray(contactAliases) ? contactAliases : [])]
       .filter(value => value !== undefined && value !== null && value !== '');

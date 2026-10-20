@@ -1,6 +1,10 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
 // Country-code hints are deliberately provisional. A later message whose
 // text identifies a supported language always replaces this value.
-const PREFIX_LANGUAGES = new Map([
+const BASE_PREFIX_LANGUAGES = new Map([
   // Spanish-speaking destinations. NANP territories are listed before +1.
   ['1787', 'es'], ['1939', 'es'], ['1809', 'es'], ['1829', 'es'], ['1849', 'es'],
   ['34', 'es'], ['51', 'es'], ['52', 'es'], ['53', 'es'], ['54', 'es'],
@@ -12,10 +16,47 @@ const PREFIX_LANGUAGES = new Map([
   ['33', 'fr'], ['377', 'fr'], ['590', 'fr'], ['594', 'fr'], ['596', 'fr'],
   ['262', 'fr'], ['508', 'fr'], ['509', 'fr'], ['687', 'fr'], ['689', 'fr'],
 
+  // Italian-speaking destinations among the languages supported by the bot.
+  ['39', 'it'], ['378', 'it'], ['379', 'it'],
+
   // English-speaking destinations among the languages supported by the bot.
   ['1', 'en'], ['44', 'en'], ['61', 'en'], ['64', 'en'], ['353', 'en'],
 ]);
 
+const DEFAULT_CUSTOM_RULES_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'data',
+  'language_rules.custom.json',
+);
+
+function buildPrefixMap() {
+  const merged = new Map(BASE_PREFIX_LANGUAGES);
+  const customRulesFile = (process.env.CUSTOM_LANGUAGE_RULES_FILE || '').trim() || DEFAULT_CUSTOM_RULES_PATH;
+  if (fs.existsSync(customRulesFile)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(customRulesFile, 'utf8'));
+      const customLangs = parsed && typeof parsed.languages === 'object' && !Array.isArray(parsed.languages)
+        ? parsed.languages
+        : {};
+      for (const [langCode, spec] of Object.entries(customLangs)) {
+        if (!/^[a-z]{2,5}$/.test(langCode) || !spec || typeof spec !== 'object') continue;
+        if (Array.isArray(spec.phone_prefixes)) {
+          for (const rawPrefix of spec.phone_prefixes) {
+            const clean = String(rawPrefix || '').replace(/^\+/, '').trim();
+            if (/^\d{1,6}$/.test(clean)) {
+              merged.set(clean, langCode);
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed custom rules file
+    }
+  }
+  return merged;
+}
+
+const PREFIX_LANGUAGES = buildPrefixMap();
 const ORDERED_PREFIXES = [...PREFIX_LANGUAGES.keys()]
   .sort((left, right) => right.length - left.length);
 

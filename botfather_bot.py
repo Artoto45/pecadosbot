@@ -17,6 +17,7 @@ from botfather_language_state import (
     apply_message_language_evidence,
     detect_supported_language,
 )
+from language_detection import reload_language_rules
 from message_schema import load_message_file
 from telegram_audio_branding import resolve_audio_branding
 
@@ -132,6 +133,7 @@ def load_messages_fresh():
     global MESSAGES
     try:
         MESSAGES = load_messages()
+        reload_language_rules()
     except Exception:
         pass
 

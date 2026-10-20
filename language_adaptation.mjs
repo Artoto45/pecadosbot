@@ -1,11 +1,16 @@
-const LANGUAGE_VALUES = ['es', 'en', 'fr'];
+const LANGUAGE_VALUES = ['es', 'en', 'fr', 'it'];
 export const VALID_LANGUAGES = new Set(LANGUAGE_VALUES);
+const LANG_CODE_RE = /^[a-z]{2,5}$/;
 const VALID_SOURCES = new Set(['detected', 'provisional', 'operator_seed', 'legacy']);
 const EVIDENCE_KEYS = ['explicit', 'language', 'margin', 'score', 'strong'];
 
+export function isValidLanguage(value) {
+  return typeof value === 'string' && LANG_CODE_RE.test(value);
+}
+
 export function sanitizeLanguageState(state) {
   const raw = state && typeof state === 'object' && !Array.isArray(state) ? state : {};
-  const language = VALID_LANGUAGES.has(raw.language) ? raw.language : null;
+  const language = isValidLanguage(raw.language) ? raw.language : null;
   const provisional = Boolean(language && raw.language_provisional === true);
   let source = VALID_SOURCES.has(raw.language_source)
     ? raw.language_source
@@ -14,8 +19,8 @@ export function sanitizeLanguageState(state) {
   let candidate = raw.language_candidate;
   let streak = raw.language_candidate_streak;
   const candidateAllowed = Boolean(
-    VALID_LANGUAGES.has(language)
-    && VALID_LANGUAGES.has(candidate)
+    isValidLanguage(language)
+    && isValidLanguage(candidate)
     && Number.isInteger(streak)
     && streak === 1
     && (provisional || candidate !== language)
@@ -39,7 +44,7 @@ function normalisedObservation(detectedLanguage, languageEvidence) {
     const language = languageEvidence.language;
     const valid = Boolean(
       keys.join(',') === EVIDENCE_KEYS.join(',')
-      && (language === null || VALID_LANGUAGES.has(language))
+      && (language === null || isValidLanguage(language))
       && typeof languageEvidence.strong === 'boolean'
       && typeof languageEvidence.explicit === 'boolean'
       && Number.isInteger(languageEvidence.score)
@@ -56,7 +61,7 @@ function normalisedObservation(detectedLanguage, languageEvidence) {
       observedText: true,
     };
   }
-  const language = VALID_LANGUAGES.has(detectedLanguage) ? detectedLanguage : null;
+  const language = isValidLanguage(detectedLanguage) ? detectedLanguage : null;
   return { language, strong: false, observedText: Boolean(language) };
 }
 
@@ -66,7 +71,7 @@ export function reduceLanguageState(state, {
   provisionalLanguage = null,
 } = {}) {
   const nextState = sanitizeLanguageState(state);
-  const provisional = VALID_LANGUAGES.has(provisionalLanguage) ? provisionalLanguage : null;
+  const provisional = isValidLanguage(provisionalLanguage) ? provisionalLanguage : null;
   const observation = normalisedObservation(detectedLanguage, languageEvidence);
   const current = nextState.language;
   const clearCandidate = () => {
@@ -92,7 +97,7 @@ export function reduceLanguageState(state, {
     return false;
   };
 
-  if (!VALID_LANGUAGES.has(current)) {
+  if (!isValidLanguage(current)) {
     if (observation.language && observation.strong) {
       setDetected(observation.language);
     } else if (observation.language) {

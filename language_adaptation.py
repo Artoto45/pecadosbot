@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any
 
 
-VALID_LANGUAGES = frozenset({"es", "en", "fr"})
+VALID_LANGUAGES = frozenset({"es", "en", "fr", "it"})
+_LANGUAGE_CODE_RE = re.compile(r"^[a-z]{2,5}$")
 VALID_LANGUAGE_SOURCES = frozenset({"detected", "provisional", "operator_seed", "legacy"})
 EVIDENCE_KEYS = frozenset({"language", "strong", "explicit", "score", "margin"})
+
+
+def is_valid_language(value: object) -> bool:
+    return isinstance(value, str) and bool(_LANGUAGE_CODE_RE.fullmatch(value))
 
 
 def sanitize_language_state(state: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -16,7 +22,7 @@ def sanitize_language_state(state: Mapping[str, Any] | None) -> dict[str, Any]:
 
     raw = state if isinstance(state, Mapping) else {}
     language = raw.get("language")
-    if language not in VALID_LANGUAGES:
+    if not is_valid_language(language):
         language = None
     provisional = bool(language and raw.get("language_provisional") is True)
     source = raw.get("language_source")
@@ -28,8 +34,8 @@ def sanitize_language_state(state: Mapping[str, Any] | None) -> dict[str, Any]:
     candidate = raw.get("language_candidate")
     streak = raw.get("language_candidate_streak")
     candidate_allowed = bool(
-        language in VALID_LANGUAGES
-        and candidate in VALID_LANGUAGES
+        is_valid_language(language)
+        and is_valid_language(candidate)
         and isinstance(streak, int)
         and not isinstance(streak, bool)
         and streak == 1
@@ -60,7 +66,7 @@ def _normalised_observation(
         score = language_evidence.get("score")
         margin = language_evidence.get("margin")
         valid = bool(
-            language in VALID_LANGUAGES | {None}
+            (language is None or is_valid_language(language))
             and isinstance(strong, bool)
             and isinstance(explicit, bool)
             and isinstance(score, int)
@@ -75,7 +81,7 @@ def _normalised_observation(
         if not valid:
             return None, False, True
         return language, bool(language and strong), True
-    language = detected_language if detected_language in VALID_LANGUAGES else None
+    language = detected_language if is_valid_language(detected_language) else None
     # Legacy language-only observations remain compatible but deliberately
     # weak, so an old call site cannot immediately replace a confirmed language.
     return language, False, bool(language)
@@ -99,7 +105,7 @@ def reduce_language_state(
     """
 
     next_state = sanitize_language_state(state)
-    provisional = provisional_language if provisional_language in VALID_LANGUAGES else None
+    provisional = provisional_language if is_valid_language(provisional_language) else None
     detected, strong, observed_text = _normalised_observation(
         detected_language,
         language_evidence,
@@ -129,7 +135,7 @@ def reduce_language_state(
         next_state["language_candidate_streak"] = streak
         return False
 
-    if current not in VALID_LANGUAGES:
+    if not is_valid_language(current):
         if detected and strong:
             set_detected(detected)
         elif detected:

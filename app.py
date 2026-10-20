@@ -29,7 +29,12 @@ from flask import (
     session,
 )
 from telegram_auth import TelegramAuthManager
-from message_schema import load_message_file
+from language_detection import reload_language_rules
+from message_schema import (
+    LANGUAGE_CODE_RE,
+    build_default_language_template,
+    load_message_file,
+)
 from operator_admin_recovery import (
     OperatorAdminRecoveryGuard,
     operator_key_matches,
@@ -51,6 +56,8 @@ AUDIO_DIR = DATA_DIR / "audios"
 VIDEO_DIR = DATA_DIR / "videos"
 MESSAGES_FILE = DATA_DIR / "messages.json"
 DEFAULT_MESSAGES_FILE = BASE_DIR / "messages.json"
+CUSTOM_LANGUAGE_RULES_FILE = DATA_DIR / "language_rules.custom.json"
+BUILTIN_LANGUAGES = ("es", "en", "fr", "it")
 WA_CALL_HEALTH_FILE = DATA_DIR / "wa_call_health.json"
 WA_SAFETY_HEALTH_FILE = DATA_DIR / "wa_safety_health.json"
 WA_SAFETY_CONTROL_FILE = DATA_DIR / "wa_safety_control.json"
@@ -149,11 +156,14 @@ body { background: #0f0f1a; color: #e8e8f0; font-family: system-ui, -apple-syste
 .btn-success { background: #27ae60; border: none; color: #fff; }
 .btn-outline-light { border-color: #3a3a5a; color: #c8c8e0; }
 .btn-outline-light:hover { background: #2a2a4a; border-color: #5a5a7a; color: #ffffff; }
-.language-tabs { display: flex; gap: 8px; margin-bottom: 1rem; }
-.language-tabs .btn { flex: 1; }
+.language-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 1rem; }
+.language-tabs .btn { flex: 1; min-width: 120px; }
+.language-tabs .btn-add-lang { flex: 0 0 auto; min-width: auto; }
 .badge-es { background: #e67e22; color: #fff; }
 .badge-en { background: #3498db; color: #fff; }
 .badge-fr { background: #9b59b6; color: #fff; }
+.badge-it { background: #2ecc71; color: #fff; }
+.badge-custom { background: #16a085; color: #fff; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
 .status-online { background: #27ae60; }
 .status-offline { background: #e74c3c; }
@@ -415,6 +425,7 @@ label { color: #c8c8e0 !important; font-weight: 500; }
             <option value="es">Español</option>
             <option value="en">English</option>
             <option value="fr">Français</option>
+            <option value="it">Italiano</option>
           </select>
         </div>
         <div class="small text-muted mt-1">
@@ -483,6 +494,50 @@ label { color: #c8c8e0 !important; font-weight: 500; }
     <button class="btn btn-outline-light" data-lang="fr" onclick="switchLang('fr')">
       <span class="badge badge-fr">FR</span> Français
     </button>
+    <button class="btn btn-outline-light" data-lang="it" onclick="switchLang('it')">
+      <span class="badge badge-it">IT</span> Italiano
+    </button>
+    <button class="btn btn-outline-light btn-add-lang" onclick="showAddLanguageModal()">
+      ➕ Idioma
+    </button>
+  </div>
+
+  <!-- Add Modular Language Modal -->
+  <div id="add-language-modal" class="card" style="display:none;">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <span>🌐 Agregar o configurar idioma modular</span>
+      <button class="btn btn-sm btn-outline-light" onclick="hideAddLanguageModal()">✕</button>
+    </div>
+    <div class="card-body">
+      <div class="row g-2 mb-2">
+        <div class="col-md-3">
+          <label for="new-lang-code" class="form-label small">Código ISO (2-5 letras)</label>
+          <input id="new-lang-code" type="text" maxlength="5" class="form-control form-control-sm" placeholder="ej. pt, de, ru">
+        </div>
+        <div class="col-md-4">
+          <label for="new-lang-name" class="form-label small">Nombre del idioma</label>
+          <input id="new-lang-name" type="text" maxlength="40" class="form-control form-control-sm" placeholder="ej. Português">
+        </div>
+        <div class="col-md-5">
+          <label for="new-lang-aliases" class="form-label small">Nombres para petición explícita (1 palabra c/u)</label>
+          <input id="new-lang-aliases" type="text" class="form-control form-control-sm" placeholder="ej. portugues, portuguese">
+        </div>
+      </div>
+      <div class="row g-2 mb-2">
+        <div class="col-md-8">
+          <label for="new-lang-keywords" class="form-label small">Palabras o frases clave de detección automática (separadas por coma)</label>
+          <input id="new-lang-keywords" type="text" class="form-control form-control-sm" placeholder="ej. ola, bom dia, boa tarde, obrigado, disponivel, quero">
+        </div>
+        <div class="col-md-4">
+          <label for="new-lang-prefixes" class="form-label small">Prefijos telefónicos WA (opcional)</label>
+          <input id="new-lang-prefixes" type="text" class="form-control form-control-sm" placeholder="ej. +351, +55">
+        </div>
+      </div>
+      <div class="d-flex gap-2 mt-3">
+        <button class="btn btn-sm btn-success" onclick="saveNewLanguage()">💾 Guardar idioma</button>
+        <button class="btn btn-sm btn-outline-light" onclick="hideAddLanguageModal()">Cancelar</button>
+      </div>
+    </div>
   </div>
 
   <!-- Steps Container -->
@@ -503,8 +558,9 @@ label { color: #c8c8e0 !important; font-weight: 500; }
 
 <script>
 let currentLang = "es";
-const LANG_NAMES = {"es":"Español","en":"English","fr":"Français"};
-const LANG_CODES = {"es":"ES","en":"EN","fr":"FR"};
+const BUILTIN_LANGS = ["es", "en", "fr", "it"];
+const LANG_NAMES = {"es":"Español","en":"English","fr":"Français","it":"Italiano"};
+const LANG_CODES = {"es":"ES","en":"EN","fr":"FR","it":"IT"};
 let channelCsrf = null;
 let channelState = null;
 let tgAuthMode = sessionStorage.getItem("tg_auth_mode") || "link";
@@ -617,16 +673,140 @@ async function saveTelegramAudioBranding() {
   }
 }
 
+function badgeClassForLang(lang) {
+  return BUILTIN_LANGS.includes(lang) ? `badge-${lang}` : "badge-custom";
+}
+
+function syncLanguagesFromData(data) {
+  const messages = (data && data.messages) || {};
+  const langKeys = Object.keys(messages);
+  if (!langKeys.length) return;
+  langKeys.forEach(code => {
+    const info = messages[code] || {};
+    LANG_NAMES[code] = info.lang_name || LANG_NAMES[code] || code.toUpperCase();
+    LANG_CODES[code] = code.toUpperCase();
+  });
+  if (!messages[currentLang]) {
+    currentLang = langKeys[0];
+  }
+  const tabsEl = document.getElementById("lang-tabs");
+  if (tabsEl) {
+    let tabsHtml = "";
+    langKeys.forEach(code => {
+      const isActive = code === currentLang;
+      const btnClass = isActive ? "btn-light active" : "btn-outline-light";
+      tabsHtml += `<button class="btn ${btnClass}" data-lang="${escapeHtml(code)}" onclick="switchLang('${escapeHtml(code)}')">
+        <span class="badge ${badgeClassForLang(code)}">${escapeHtml(LANG_CODES[code])}</span> ${escapeHtml(LANG_NAMES[code])}
+      </button>`;
+    });
+    tabsHtml += `<button class="btn btn-outline-light btn-add-lang" onclick="showAddLanguageModal()">➕ Idioma</button>`;
+    tabsEl.innerHTML = tabsHtml;
+  }
+  const selectEl = document.getElementById("test-mode-language");
+  if (selectEl) {
+    const prevValue = selectEl.value || "auto";
+    let optsHtml = `<option value="auto">Detectar por el próximo texto</option>`;
+    langKeys.forEach(code => {
+      optsHtml += `<option value="${escapeHtml(code)}">${escapeHtml(LANG_NAMES[code])}</option>`;
+    });
+    selectEl.innerHTML = optsHtml;
+    if (prevValue === "auto" || messages[prevValue]) {
+      selectEl.value = prevValue;
+    }
+  }
+}
+
+function showAddLanguageModal() {
+  const modal = document.getElementById("add-language-modal");
+  if (modal) modal.style.display = "block";
+}
+
+function hideAddLanguageModal() {
+  const modal = document.getElementById("add-language-modal");
+  if (modal) modal.style.display = "none";
+}
+
+async function saveNewLanguage() {
+  if (!requirePanelAdmin()) return;
+  const code = (document.getElementById("new-lang-code").value || "").trim().toLowerCase();
+  const langName = (document.getElementById("new-lang-name").value || "").trim();
+  const aliases = (document.getElementById("new-lang-aliases").value || "").trim();
+  const keywords = (document.getElementById("new-lang-keywords").value || "").trim();
+  const prefixes = (document.getElementById("new-lang-prefixes").value || "").trim();
+  if (!/^[a-z]{2,5}$/.test(code) || code === "auto") {
+    toast("❌ El código debe tener entre 2 y 5 letras (ej. pt, de)", "error");
+    return;
+  }
+  if (!langName) {
+    toast("❌ Escribe el nombre visible del idioma", "error");
+    return;
+  }
+  try {
+    const r = await fetch("/api/messages", {
+      method: "POST",
+      headers: channelHeaders(),
+      body: JSON.stringify({
+        action: "add_language",
+        lang: code,
+        lang_name: langName,
+        language_names: aliases,
+        keywords: keywords,
+        phone_prefixes: prefixes
+      })
+    });
+    const resp = await r.json();
+    if (resp.ok) {
+      toast("✅ Idioma " + langName + " (" + code.toUpperCase() + ") guardado");
+      hideAddLanguageModal();
+      currentLang = code;
+      await loadData();
+    } else {
+      toast("❌ Error: " + (resp.error || "No se pudo guardar"), "error");
+    }
+  } catch(e) {
+    toast("❌ Error: " + e.message, "error");
+  }
+}
+
+async function deleteLanguage(lang) {
+  if (!requirePanelAdmin()) return;
+  if (BUILTIN_LANGS.includes(lang)) {
+    toast("❌ Los idiomas base no se pueden eliminar", "error");
+    return;
+  }
+  if (!confirm("¿Eliminar el idioma " + (LANG_NAMES[lang] || lang) + " (" + lang.toUpperCase() + ")?")) return;
+  try {
+    const r = await fetch("/api/messages", {
+      method: "POST",
+      headers: channelHeaders(),
+      body: JSON.stringify({action: "delete_language", lang})
+    });
+    const resp = await r.json();
+    if (resp.ok) {
+      toast("🗑 Idioma eliminado");
+      currentLang = "es";
+      await loadData();
+    } else {
+      toast("❌ Error: " + (resp.error || "No se pudo eliminar"), "error");
+    }
+  } catch(e) {
+    toast("❌ Error: " + e.message, "error");
+  }
+}
+
 function renderSteps(data) {
+  syncLanguagesFromData(data);
   const lang = currentLang;
   const langData = data.messages[lang];
   if (!langData) return;
 
+  const isCustomLang = !BUILTIN_LANGS.includes(lang);
   let html = `<div class="card">
     <div class="card-header d-flex justify-content-between align-items-center">
-      <span><span class="badge badge-${lang}">${LANG_CODES[lang]}</span> ${LANG_NAMES[lang]} — 2 pasos fijos</span>
-      <div>
+      <span><span class="badge ${badgeClassForLang(lang)}">${escapeHtml(LANG_CODES[lang] || lang.toUpperCase())}</span> ${escapeHtml(LANG_NAMES[lang] || langData.lang_name || lang)} — 2 pasos fijos</span>
+      <div class="d-flex gap-2">
         <button class="btn btn-sm btn-outline-primary" onclick="previewLang('${lang}')">👁 Vista previa</button>
+        ${isCustomLang ? `<button class="btn btn-sm btn-outline-danger" onclick="deleteLanguage('${lang}')">🗑 Eliminar idioma</button>` : ''}
       </div>
     </div>
     <div class="card-body">`;
@@ -2281,6 +2461,38 @@ def save_messages_json(data):
     os.replace(temp_file, MESSAGES_FILE)
 
 
+def _load_custom_language_rules() -> dict:
+    if not CUSTOM_LANGUAGE_RULES_FILE.is_file():
+        return {"languages": {}}
+    try:
+        parsed = json.loads(CUSTOM_LANGUAGE_RULES_FILE.read_text(encoding="utf-8"))
+        if isinstance(parsed, dict) and isinstance(parsed.get("languages"), dict):
+            return parsed
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+    return {"languages": {}}
+
+
+def _save_custom_language_rules(payload: dict) -> None:
+    CUSTOM_LANGUAGE_RULES_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temp_file = CUSTOM_LANGUAGE_RULES_FILE.with_suffix(".tmp")
+    temp_file.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    os.replace(temp_file, CUSTOM_LANGUAGE_RULES_FILE)
+
+
+def _split_csv_or_list(raw: object) -> list[str]:
+    if isinstance(raw, list):
+        items = [str(item).strip() for item in raw if isinstance(item, (str, int))]
+    elif isinstance(raw, str):
+        items = [part.strip() for part in raw.split(",")]
+    else:
+        items = []
+    return [item for item in items if item]
+
+
 def load_telegram_audio_branding() -> dict[str, str]:
     title, performer = resolve_audio_branding(
         defaults_path=TG_AUDIO_BRANDING_DEFAULTS_FILE,
@@ -3374,8 +3586,70 @@ def api_messages():
         return jsonify({"ok": False, "error": "No data"}), 400
 
     messages = load_messages_json()
-    lang = data.get("lang")
+    lang = (data.get("lang") or data.get("code") or "").strip().lower() if isinstance(data.get("lang") or data.get("code"), str) else data.get("lang")
     action = data.get("action")
+
+    if action == "add_language":
+        if not isinstance(lang, str) or not LANGUAGE_CODE_RE.fullmatch(lang) or lang == "auto":
+            return jsonify({"ok": False, "error": "Código de idioma inválido (usa 2 a 5 letras, ej. pt, de)"}), 400
+        lang_name = (data.get("lang_name") or "").strip() if isinstance(data.get("lang_name"), str) else ""
+        if not lang_name:
+            lang_name = messages.get(lang, {}).get("lang_name") or lang.upper()
+        if lang not in messages:
+            messages[lang] = build_default_language_template(lang, lang_name)
+        else:
+            messages[lang]["lang_name"] = lang_name
+        step1_text = data.get("step1_text")
+        if isinstance(step1_text, str) and step1_text.strip():
+            messages[lang]["steps"][0]["text"] = step1_text.strip()
+        step2_text = data.get("step2_text")
+        if isinstance(step2_text, str) and step2_text.strip():
+            messages[lang]["steps"][1]["text"] = step2_text.strip()
+        call_text = data.get("call_text")
+        if isinstance(call_text, str) and call_text.strip():
+            messages[lang]["call"]["text"] = call_text.strip()
+        save_messages_json(messages)
+
+        raw_keywords = _split_csv_or_list(data.get("keywords"))
+        raw_aliases = _split_csv_or_list(data.get("language_names"))
+        raw_prefixes = _split_csv_or_list(data.get("phone_prefixes"))
+        custom_rules = _load_custom_language_rules()
+        custom_langs = custom_rules.setdefault("languages", {})
+        existing_spec = custom_langs.get(lang, {}) if isinstance(custom_langs.get(lang), dict) else {}
+        default_alias = re.sub(r"[^a-z0-9]", "", lang_name.lower())
+        aliases = raw_aliases or existing_spec.get("language_names") or ([default_alias] if default_alias else [])
+        rules_list = (
+            [{"term": kw, "weight": 7, "decisive": True} for kw in raw_keywords]
+            if raw_keywords
+            else existing_spec.get("rules", [])
+        )
+        prefixes_list = (
+            [re.sub(r"^\+", "", p).strip() for p in raw_prefixes if re.fullmatch(r"\+?\d{1,6}", p.strip())]
+            if raw_prefixes
+            else existing_spec.get("phone_prefixes", [])
+        )
+        custom_langs[lang] = {
+            "language_names": aliases,
+            "rules": rules_list,
+            "phone_prefixes": prefixes_list,
+        }
+        _save_custom_language_rules(custom_rules)
+        reload_language_rules()
+        return jsonify({"ok": True, "lang": lang, "lang_name": lang_name})
+
+    if action == "delete_language":
+        if not isinstance(lang, str) or lang not in messages:
+            return jsonify({"ok": False, "error": f"Idioma '{lang}' no existe"}), 400
+        if lang in BUILTIN_LANGUAGES:
+            return jsonify({"ok": False, "error": "Los idiomas base no se pueden eliminar"}), 400
+        messages.pop(lang, None)
+        save_messages_json(messages)
+        custom_rules = _load_custom_language_rules()
+        if isinstance(custom_rules.get("languages"), dict):
+            custom_rules["languages"].pop(lang, None)
+            _save_custom_language_rules(custom_rules)
+        reload_language_rules()
+        return jsonify({"ok": True, "deleted": lang})
 
     if lang not in messages:
         return jsonify({"ok": False, "error": f"Idioma '{lang}' no existe"}), 400
@@ -3629,7 +3903,11 @@ def api_video(filename):
 # ── Chunked upload (bypass proxy size limits) ─────────────────────────
 
 def _upload_chunk_temp_key(lang: str, upload_type: str, step: int | None) -> str | None:
-    if lang not in {"es", "en", "fr"}:
+    if (
+        not isinstance(lang, str)
+        or not LANGUAGE_CODE_RE.fullmatch(lang)
+        or (lang not in BUILTIN_LANGUAGES and lang not in load_messages_json())
+    ):
         return None
     if upload_type not in _ALLOWED_UPLOAD_TYPES:
         return None
@@ -4510,7 +4788,8 @@ def api_test_mode_reset():
     if selected not in {"telegram", "whatsapp", "both"}:
         return jsonify({"ok": False, "error": "Canal de prueba inválido."}), 400
     selected_language = data.get("language", "auto")
-    if selected_language not in {"auto", "es", "en", "fr"}:
+    allowed_test_languages = {"auto", *BUILTIN_LANGUAGES, *load_messages_json().keys()}
+    if selected_language not in allowed_test_languages:
         return jsonify({"ok": False, "error": "Idioma de prueba inválido."}), 400
     target = data.get("target", "latest")
     if target not in {"latest", "number"}:

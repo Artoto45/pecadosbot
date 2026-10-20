@@ -1,7 +1,14 @@
 import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const LANGUAGES = Object.freeze(['es', 'en', 'fr']);
 const RULES_URL = new URL('./language_rules.json', import.meta.url);
+const DEFAULT_CUSTOM_RULES_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'data',
+  'language_rules.custom.json',
+);
+const LANG_CODE_PATTERN = /^[a-z]{2,5}$/;
 const APOSTROPHES = /[’‘`´]/gu;
 const TOKEN_PATTERN = /[\p{L}\p{N}]+/gu;
 
@@ -83,16 +90,20 @@ function loadRules() {
     }
     neutral.add(tokens[0]);
   }
+  const configuredLanguages = Object.keys(rules);
   if (
-    Object.keys(names).sort().join(',') !== [...LANGUAGES].sort().join(',')
-    || Object.keys(rules).sort().join(',') !== [...LANGUAGES].sort().join(',')
+    !configuredLanguages.length
+    || Object.keys(names).sort().join(',') !== [...configuredLanguages].sort().join(',')
   ) {
-    throw new TypeError('language rules must define exactly es, en, and fr');
+    throw new TypeError('language rules must define matching language_names and rules');
   }
 
   const nameTargets = new Map();
   const compiledRules = {};
-  for (const language of LANGUAGES) {
+  for (const language of configuredLanguages) {
+    if (typeof language !== 'string' || !LANG_CODE_PATTERN.test(language)) {
+      throw new TypeError(`invalid language code: ${language}`);
+    }
     if (!Array.isArray(names[language]) || !names[language].length || !Array.isArray(rules[language])) {
       throw new TypeError(`rules for ${language} must be arrays`);
     }
@@ -122,6 +133,45 @@ function loadRules() {
       seen.add(key);
       return Object.freeze({ tokens: Object.freeze(tokens), weight: rule.weight, decisive: rule.decisive });
     });
+  }
+
+  const customRulesFile = (process.env.CUSTOM_LANGUAGE_RULES_FILE || '').trim() || DEFAULT_CUSTOM_RULES_PATH;
+  if (fs.existsSync(customRulesFile)) {
+    try {
+      const customPayload = JSON.parse(fs.readFileSync(customRulesFile, 'utf8'));
+      const customLangs = customPayload && typeof customPayload.languages === 'object' && !Array.isArray(customPayload.languages)
+        ? customPayload.languages
+        : {};
+      for (const [rawCode, spec] of Object.entries(customLangs)) {
+        if (!LANG_CODE_PATTERN.test(rawCode) || !spec || typeof spec !== 'object' || Array.isArray(spec)) continue;
+        if (!compiledRules[rawCode]) compiledRules[rawCode] = [];
+        const existingSeen = new Set(compiledRules[rawCode].map(r => r.tokens.join('\0')));
+        if (Array.isArray(spec.language_names)) {
+          for (const rawName of spec.language_names) {
+            const tokens = typeof rawName === 'string' ? tokensUnbounded(rawName) : [];
+            if (tokens.length === 1 && !nameTargets.has(tokens[0]) && !neutral.has(tokens[0])) {
+              nameTargets.set(tokens[0], rawCode);
+            }
+          }
+        }
+        if (Array.isArray(spec.rules)) {
+          for (const rawRule of spec.rules) {
+            if (!rawRule || typeof rawRule !== 'object') continue;
+            const tokens = typeof rawRule.term === 'string' ? tokensUnbounded(rawRule.term) : [];
+            const key = tokens.join('\0');
+            const weight = Number.isInteger(rawRule.weight) && rawRule.weight >= 1 ? rawRule.weight : 7;
+            const decisive = typeof rawRule.decisive === 'boolean' ? rawRule.decisive : true;
+            if (!tokens.length || existingSeen.has(key) || (tokens.length === 1 && neutral.has(tokens[0]))) continue;
+            existingSeen.add(key);
+            compiledRules[rawCode].push(
+              Object.freeze({ tokens: Object.freeze(tokens), weight, decisive }),
+            );
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed custom language rules file so startup never fails
+    }
   }
 
   const negationTokens = new Set();
@@ -177,7 +227,9 @@ function loadRules() {
     connectors.add(tokens[0]);
   }
   if (!connectors.size) throw new TypeError('contrastive connectors must not be empty');
+  const allLanguages = Object.freeze(Object.keys(compiledRules));
   return Object.freeze({
+    languages: allLanguages,
     limits: Object.freeze({ ...limits }),
     thresholds: Object.freeze({ ...thresholds }),
     neutral,
@@ -193,7 +245,18 @@ function loadRules() {
   });
 }
 
-const RULES = loadRules();
+let RULES = loadRules();
+export let LANGUAGES = RULES.languages;
+
+export function reloadLanguageRules() {
+  RULES = loadRules();
+  LANGUAGES = RULES.languages;
+  return LANGUAGES;
+}
+
+export function getSupportedLanguages() {
+  return RULES.languages;
+}
 
 export function normalizeLanguageText(text) {
   if (typeof text !== 'string') return '';
@@ -303,8 +366,9 @@ function directiveSegments(clauses) {
 export function detectLanguageEvidence(text) {
   const clauses = tokenizeLanguageClauses(text);
   const tokens = clauses.flat();
-  const scores = { es: 0, en: 0, fr: 0 };
-  const decisive = { es: false, en: false, fr: false };
+  const activeLanguages = RULES.languages;
+  const scores = Object.fromEntries(activeLanguages.map(lang => [lang, 0]));
+  const decisive = Object.fromEntries(activeLanguages.map(lang => [lang, false]));
   const lastDirective = new Map();
   let lastPositiveGroup = new Set();
 
@@ -340,7 +404,7 @@ export function detectLanguageEvidence(text) {
     [...lastDirective].filter(([, directive]) => directive === 'negative').map(([language]) => language),
   );
 
-  for (const language of LANGUAGES) {
+  for (const language of activeLanguages) {
     if (explicitHits.has(language)) scores[language] += RULES.thresholds.explicit_weight;
     for (const rule of RULES.rules[language]) {
       if (containsSequence(tokens, rule.tokens)) {
@@ -358,7 +422,7 @@ export function detectLanguageEvidence(text) {
   const orderedScores = Object.values(scores).sort((left, right) => right - left);
   const score = orderedScores[0];
   let margin = score - orderedScores[1];
-  const winners = LANGUAGES.filter(language => scores[language] === score);
+  const winners = activeLanguages.filter(language => scores[language] === score);
   let language = score > 0 && winners.length === 1 ? winners[0] : null;
   if (explicitHits.size > 1) {
     language = null;

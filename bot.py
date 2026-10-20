@@ -16,6 +16,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import time
 from types import SimpleNamespace
 import uuid
@@ -24,7 +25,11 @@ from telethon import TelegramClient, errors, events, utils
 from telethon.tl import types
 
 from interaction_state import PersistentInteractionState
-from language_detection import detect_language_evidence, detect_supported_language
+from language_detection import (
+    detect_language_evidence,
+    detect_supported_language,
+    reload_language_rules,
+)
 from message_schema import load_message_file
 from telegram_audio_branding import (
     brand_audio_attributes,
@@ -94,8 +99,8 @@ _load_env_file()
 API_ID = int(os.environ["TG_API_ID"]) if os.environ.get("TG_API_ID") else None
 API_HASH = os.environ.get("TG_API_HASH")
 PHONE = os.environ.get("TG_PHONE")
-DEFAULT_LANGUAGE = os.environ.get("AUTOREPLY_DEFAULT_LANG", "es").lower()
-if DEFAULT_LANGUAGE not in {"es", "en", "fr"}:
+DEFAULT_LANGUAGE = os.environ.get("AUTOREPLY_DEFAULT_LANG", "es").strip().lower()
+if not re.fullmatch(r"[a-z]{2,5}", DEFAULT_LANGUAGE):
     DEFAULT_LANGUAGE = "es"
 
 if not API_ID or not API_HASH:
@@ -148,6 +153,7 @@ def load_messages_fresh() -> None:
     global MESSAGES
     try:
         MESSAGES = load_messages()
+        reload_language_rules()
     except Exception:
         logging.exception("No se pudo recargar messages.json; se conserva la versión anterior")
 

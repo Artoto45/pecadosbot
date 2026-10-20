@@ -19,6 +19,7 @@ from typing import Callable
 
 from language_adaptation import (
     VALID_LANGUAGES,
+    is_valid_language,
     reduce_language_state,
     sanitize_language_state,
 )
@@ -68,8 +69,8 @@ class PersistentInteractionState:
         now: Callable[[], float] = time.time,
         logger: logging.Logger | None = None,
     ) -> None:
-        if default_language not in VALID_LANGUAGES:
-            raise ValueError("default_language must be es, en, or fr")
+        if not is_valid_language(default_language):
+            raise ValueError("default_language must be a valid language code")
         if max_recent_events < 1:
             raise ValueError("max_recent_events must be positive")
         if max_contacts < 1:
@@ -145,7 +146,7 @@ class PersistentInteractionState:
                 events = raw.get("recent_events", [])
                 if not isinstance(phase, int) or phase not in (0, 1, 2):
                     continue
-                if language not in VALID_LANGUAGES:
+                if not is_valid_language(language):
                     language = None
                 if not isinstance(events, list):
                     events = []
@@ -200,7 +201,7 @@ class PersistentInteractionState:
             raise ValueError("event_id is required")
         if kind not in VALID_KINDS:
             raise ValueError("kind must be call or content")
-        if provisional_language not in VALID_LANGUAGES:
+        if not is_valid_language(provisional_language):
             provisional_language = None
 
         contact_key = self._fingerprint("contact", contact_id)
@@ -288,7 +289,7 @@ class PersistentInteractionState:
             raise ValueError("event_id is required")
         if kind not in VALID_KINDS:
             raise ValueError("kind must be call or content")
-        if provisional_language not in VALID_LANGUAGES:
+        if not is_valid_language(provisional_language):
             provisional_language = None
 
         contact_key = self._fingerprint("contact", contact_id)

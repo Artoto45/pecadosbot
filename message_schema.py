@@ -6,7 +6,39 @@ from copy import deepcopy
 import json
 import os
 from pathlib import Path
+import re
 import sys
+
+LANGUAGE_CODE_RE = re.compile(r"^[a-z]{2,5}$")
+
+
+def build_default_language_template(language: str, lang_name: str | None = None) -> dict:
+    code = language.strip().lower()
+    display_name = (lang_name or "").strip() or code.upper()
+    return {
+        "lang_name": display_name,
+        "steps": [
+            {
+                "step": 1,
+                "text": "👋",
+                "audio": f"{code}_msg1.mp3",
+                "video": "",
+                "loop": False,
+            },
+            {
+                "step": 2,
+                "text": "⏳",
+                "audio": f"{code}_msg2.mp3",
+                "video": "",
+                "loop": True,
+            },
+        ],
+        "call": {
+            "text": "📞",
+            "audio": f"{code}_call.mp3",
+            "video": "",
+        },
+    }
 
 
 def normalize_message_schema(messages: object, defaults: object) -> tuple[dict, bool]:
@@ -15,13 +47,39 @@ def normalize_message_schema(messages: object, defaults: object) -> tuple[dict, 
 
     normalized = deepcopy(messages)
     changed = False
-    for language, default_language_data in defaults.items():
+
+    effective_defaults = deepcopy(defaults)
+    for language, raw_data in list(normalized.items()):
+        if language in effective_defaults:
+            continue
+        if (
+            isinstance(language, str)
+            and LANGUAGE_CODE_RE.fullmatch(language)
+            and isinstance(raw_data, dict)
+        ):
+            raw_name = raw_data.get("lang_name")
+            effective_defaults[language] = build_default_language_template(
+                language,
+                raw_name if isinstance(raw_name, str) else None,
+            )
+
+    for language, default_language_data in effective_defaults.items():
         if not isinstance(default_language_data, dict):
             continue
         language_data = normalized.get(language)
         if not isinstance(language_data, dict):
             normalized[language] = deepcopy(default_language_data)
             language_data = normalized[language]
+            changed = True
+
+        default_lang_name = default_language_data.get("lang_name")
+        current_lang_name = language_data.get("lang_name")
+        if (
+            isinstance(default_lang_name, str)
+            and default_lang_name.strip()
+            and (not isinstance(current_lang_name, str) or not current_lang_name.strip())
+        ):
+            language_data["lang_name"] = default_lang_name.strip()
             changed = True
 
         steps = language_data.get("steps")

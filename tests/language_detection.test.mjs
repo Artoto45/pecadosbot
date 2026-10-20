@@ -35,3 +35,10 @@ test('los límites de texto y tokens acotan el trabajo del detector', () => {
   assert.equal(detectSupportedLanguage(`${'x'.repeat(4096)} hello`), null);
   assert.equal(detectSupportedLanguage(`${'x '.repeat(256)}hello`), null);
 });
+
+test('detecta italiano en saludos, consultas y solicitudes explícitas', () => {
+  assert.equal(detectSupportedLanguage('Ciao, ragazze disponibili?'), 'it');
+  assert.equal(detectSupportedLanguage('Buongiorno, quanto costa?'), 'it');
+  assert.equal(detectSupportedLanguage('Parlami in italiano per favore'), 'it');
+  assert.equal(detectSupportedLanguage('Non parlo italiano, speak in english'), 'en');
+});

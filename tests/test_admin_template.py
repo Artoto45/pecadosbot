@@ -394,6 +394,70 @@ class AdminTemplateTestCase(unittest.TestCase):
             self.assertTrue(app_module._is_telegram_worker_pid(4321))
             run_mock.assert_called_once()
 
+    def test_modular_language_can_be_added_detected_and_deleted_from_panel(self):
+        import language_detection
+
+        operator_key = install_operator_key(self)
+        app_module.app.config.update(TESTING=True)
+        client = app_module.app.test_client()
+        csrf = "m" * 48
+        grant_operator_admin(client, operator_key, csrf=csrf)
+        headers = {"X-Channel-CSRF": csrf}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            data_dir = Path(temporary) / "data"
+            messages_file = data_dir / "messages.json"
+            custom_rules_file = data_dir / "language_rules.custom.json"
+            with (
+                patch.object(app_module, "DATA_DIR", data_dir),
+                patch.object(app_module, "MESSAGES_FILE", messages_file),
+                patch.object(app_module, "CUSTOM_LANGUAGE_RULES_FILE", custom_rules_file),
+                patch.dict("os.environ", {"CUSTOM_LANGUAGE_RULES_FILE": str(custom_rules_file)}),
+            ):
+                add_resp = client.post(
+                    "/api/messages",
+                    json={
+                        "action": "add_language",
+                        "lang": "pt",
+                        "lang_name": "Português",
+                        "language_names": "portugues, portuguese",
+                        "keywords": "ola, bom dia, obrigado",
+                        "phone_prefixes": "+351, +55",
+                        "step1_text": "👋 Olá!",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(200, add_resp.status_code)
+                self.assertTrue(add_resp.get_json()["ok"])
+
+                saved_messages = json.loads(messages_file.read_text(encoding="utf-8"))
+                self.assertIn("pt", saved_messages)
+                self.assertIn("it", saved_messages)
+                self.assertEqual("Português", saved_messages["pt"]["lang_name"])
+                self.assertEqual("👋 Olá!", saved_messages["pt"]["steps"][0]["text"])
+
+                self.assertEqual("pt", language_detection.detect_supported_language("Bom dia, obrigado"))
+                self.assertEqual("pt", language_detection.detect_supported_language("Speak in portuguese please"))
+
+                # Built-in languages cannot be deleted
+                forbid_delete = client.post(
+                    "/api/messages",
+                    json={"action": "delete_language", "lang": "it"},
+                    headers=headers,
+                )
+                self.assertEqual(400, forbid_delete.status_code)
+
+                # Custom language can be deleted
+                del_resp = client.post(
+                    "/api/messages",
+                    json={"action": "delete_language", "lang": "pt"},
+                    headers=headers,
+                )
+                self.assertEqual(200, del_resp.status_code)
+                saved_after = json.loads(messages_file.read_text(encoding="utf-8"))
+                self.assertNotIn("pt", saved_after)
+            language_detection.reload_language_rules()
+
 
 if __name__ == "__main__":
     unittest.main()

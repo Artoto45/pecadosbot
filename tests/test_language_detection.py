@@ -32,6 +32,12 @@ class LanguageDetectionTests(unittest.TestCase):
         self.assertIsNone(detect_supported_language("x" * 4096 + " hello"))
         self.assertIsNone(detect_supported_language(("x " * 256) + "hello"))
 
+    def test_italian_greetings_inquiries_and_explicit_requests(self):
+        self.assertEqual("it", detect_supported_language("Ciao, ragazze disponibili?"))
+        self.assertEqual("it", detect_supported_language("Buongiorno, quanto costa?"))
+        self.assertEqual("it", detect_supported_language("Parlami in italiano per favore"))
+        self.assertEqual("en", detect_supported_language("Non parlo italiano, speak in english"))
+
 
 if __name__ == "__main__":
     unittest.main()

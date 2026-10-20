@@ -23,7 +23,7 @@ import {
   readWhatsAppSafetyConfig,
   recordWhatsAppProviderSignal,
 } from './wa_delivery_safety.mjs';
-import { detectLanguageEvidence } from './language_detection.mjs';
+import { detectLanguageEvidence, reloadLanguageRules } from './language_detection.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASE_DIR = path.resolve(process.env.BOT_DIR || __dirname);
@@ -60,8 +60,8 @@ const IDENTITY_FILE = path.resolve(
 const LINK_ONLY = process.env.WA_LINK_ONLY === '1';
 const VOICE_NOTES_ENABLED = process.env.WA_VOICE_NOTES_ENABLED !== '0';
 const PROFILE_PICTURE_ENABLED = process.env.WA_PROFILE_PICTURE_ENABLED !== '0';
-const configuredDefaultLanguage = String(process.env.AUTOREPLY_DEFAULT_LANG || 'es').toLowerCase();
-const DEFAULT_LANGUAGE = ['es', 'en', 'fr'].includes(configuredDefaultLanguage)
+const configuredDefaultLanguage = String(process.env.AUTOREPLY_DEFAULT_LANG || 'es').trim().toLowerCase();
+const DEFAULT_LANGUAGE = /^[a-z]{2,5}$/.test(configuredDefaultLanguage)
   ? configuredDefaultLanguage
   : 'es';
 const callHealth = createWhatsAppCallHealth({ filePath: CALL_HEALTH_FILE, logger: console });
@@ -232,6 +232,7 @@ if (!LINK_ONLY) {
   fs.watchFile(MESSAGES_FILE, () => {
     try {
       MESSAGES = loadMessages();
+      reloadLanguageRules();
       console.log(`[WA] messages.json recargado — ${Object.keys(MESSAGES).length} idiomas`);
     } catch (e) {
       console.error('[WA] Error recargando messages.json:', e.message);

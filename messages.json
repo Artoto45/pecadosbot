@@ -70,5 +70,29 @@
       "audio": "fr_call.mp3",
       "video": ""
     }
+  },
+  "it": {
+    "lang_name": "Italiano",
+    "steps": [
+      {
+        "step": 1,
+        "text": "👋 Ciao! Grazie per averci contattato. Un operatore ti risponderà a breve.",
+        "audio": "it_msg1.mp3",
+        "video": "",
+        "loop": false
+      },
+      {
+        "step": 2,
+        "text": "⏳ Grazie per l attesa. Stiamo assegnando un operatore per te.",
+        "audio": "it_msg2.mp3",
+        "video": "",
+        "loop": true
+      }
+    ],
+    "call": {
+      "text": "📞 Hai una chiamata persa. Ti ricontatteremo a breve.",
+      "audio": "it_call.mp3",
+      "video": ""
+    }
   }
 }

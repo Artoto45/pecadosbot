@@ -7,6 +7,7 @@ test('deriva los idiomas soportados desde PN de WhatsApp', () => {
   assert.equal(provisionalLanguageFromWhatsAppIdentity('573001234567@s.whatsapp.net'), 'es');
   assert.equal(provisionalLanguageFromWhatsAppIdentity('34600123456@hosted'), 'es');
   assert.equal(provisionalLanguageFromWhatsAppIdentity('33612345678@s.whatsapp.net'), 'fr');
+  assert.equal(provisionalLanguageFromWhatsAppIdentity('393401234567@s.whatsapp.net'), 'it');
   assert.equal(provisionalLanguageFromWhatsAppIdentity('447700900123@s.whatsapp.net'), 'en');
 });
 

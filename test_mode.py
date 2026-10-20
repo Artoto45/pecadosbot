@@ -104,8 +104,10 @@ def reset_latest_interaction(
 
     if channel not in {"telegram", "whatsapp"}:
         raise ValueError("channel must be telegram or whatsapp")
-    if language not in {None, "es", "en", "fr"}:
-        raise ValueError("language must be es, en, fr, or None")
+    if language is not None and (
+        not isinstance(language, str) or not re.fullmatch(r"[a-z]{2,5}", language)
+    ):
+        raise ValueError("language must be a valid language code or None")
 
     payload = _read_object(state_path)
     contacts = payload.get("contacts", {})
@@ -157,8 +159,10 @@ def reset_whatsapp_interaction_by_number(
     becoming a customer-number enumeration oracle.
     """
 
-    if language not in {None, "es", "en", "fr"}:
-        raise ValueError("language must be es, en, fr, or None")
+    if language is not None and (
+        not isinstance(language, str) or not re.fullmatch(r"[a-z]{2,5}", language)
+    ):
+        raise ValueError("language must be a valid language code or None")
     normalized_phone = normalize_whatsapp_phone(phone)
     if normalized_phone is None:
         raise ValueError("invalid WhatsApp phone")
