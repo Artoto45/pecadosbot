@@ -49,7 +49,7 @@ const VOICE_NOTE_CACHE_DIR = path.resolve(
   process.env.WA_VOICE_NOTE_CACHE_DIR || path.join(DATA_DIR, 'wa_voice_notes'),
 );
 const PROFILE_PICTURE_PATH = path.resolve(
-  process.env.WA_PROFILE_PICTURE_PATH || path.join(BASE_DIR, 'assets', 'whatsapp-profile-logo.jpg'),
+  process.env.WA_PROFILE_PICTURE_PATH || path.join(BASE_DIR, 'assets', 'pecadosvip-profile-logo.png'),
 );
 const PROFILE_PICTURE_STATE_FILE = path.resolve(
   process.env.WA_PROFILE_PICTURE_STATE_FILE || path.join(DATA_DIR, 'wa_profile_picture_state.json'),
